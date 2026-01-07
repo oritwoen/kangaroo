@@ -44,7 +44,7 @@ pub fn is_provider(input: &str) -> bool {
         return false;
     }
 
-    matches!(provider, "boha")
+    supported_providers().contains(&provider)
 }
 
 /// Resolve a provider reference to puzzle data
