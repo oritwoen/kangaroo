@@ -220,7 +220,7 @@ fn validate_search_bounds(
         ));
     }
 
-    let search_end = &start_val + (BigUint::from(1u32) << range_bits);
+    let search_end = &start_val + (BigUint::from(1u64) << range_bits);
     if search_end > provider_end_val {
         return Err(anyhow!(
             "Search range [0x{}..0x{:x}] exceeds puzzle '{}' maximum 0x{}",
