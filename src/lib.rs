@@ -12,14 +12,18 @@ mod crypto;
 mod gpu;
 mod gpu_crypto;
 mod math;
+mod provider;
 mod solver;
 
-pub use solver::KangarooSolver;
 pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, Point};
 pub use gpu_crypto::GpuContext;
+pub use solver::KangarooSolver;
 
+use anyhow::anyhow;
 use clap::Parser;
 use indicatif::ProgressBar;
+#[cfg(feature = "boha")]
+use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
 use tracing::{error, info};
@@ -32,15 +36,23 @@ use tracing::{error, info};
 pub struct Args {
     /// Public key to solve (compressed hex, 33 bytes)
     #[arg(short, long)]
-    pubkey: String,
+    pubkey: Option<String>,
 
     /// Start of search range (hex, without 0x prefix)
     #[arg(short, long)]
-    start: String,
+    start: Option<String>,
 
     /// Bit range to search (key is in [start, start + 2^range])
-    #[arg(short, long, default_value = "32")]
-    range: u32,
+    #[arg(short, long)]
+    range: Option<u32>,
+
+    /// Data provider target (e.g., boha:b1000/135)
+    #[arg(short, long)]
+    target: Option<String>,
+
+    /// List available puzzles from providers
+    #[arg(long)]
+    list_providers: bool,
 
     /// Distinguished point bits (auto-calculated if not set)
     #[arg(short, long)]
@@ -101,44 +113,211 @@ where
     run(args)
 }
 
+struct ResolvedParams {
+    pubkey_str: String,
+    start_str: String,
+    range_bits: u32,
+}
+
+fn resolve_params(args: &Args) -> anyhow::Result<ResolvedParams> {
+    let provider_result = if let Some(ref target) = args.target {
+        provider::resolve(target)?
+    } else {
+        None
+    };
+
+    let (pubkey_str, start_str, range_bits) = match provider_result {
+        Some(ref pr) => {
+            let pubkey_str = match (&args.pubkey, &pr.pubkey) {
+                (Some(p), _) => p.clone(),
+                (None, Some(p)) => p.clone(),
+                (None, None) => {
+                    return Err(anyhow!(
+                        "Puzzle '{}' has no public key. Cannot solve without pubkey.",
+                        pr.id
+                    ))
+                }
+            };
+
+            let start_str = args
+                .start
+                .clone()
+                .or_else(|| pr.start.clone())
+                .unwrap_or_else(|| "0".to_string());
+
+            let range_bits = match (args.range, pr.range_bits) {
+                (Some(user_range), Some(provider_range)) => {
+                    validate_range_override(user_range, provider_range, &pr.id)?;
+                    user_range
+                }
+                (Some(user_range), None) => user_range,
+                (None, Some(provider_range)) => provider_range,
+                (None, None) => 32,
+            };
+
+            validate_search_bounds(&start_str, range_bits, pr)?;
+
+            (pubkey_str, start_str, range_bits)
+        }
+        None => {
+            let pubkey_str = args
+                .pubkey
+                .clone()
+                .ok_or_else(|| anyhow!("--pubkey is required when not using --target"))?;
+            let start_str = args.start.clone().unwrap_or_else(|| "0".to_string());
+            let range_bits = args.range.unwrap_or(32);
+            (pubkey_str, start_str, range_bits)
+        }
+    };
+
+    Ok(ResolvedParams {
+        pubkey_str,
+        start_str,
+        range_bits,
+    })
+}
+
+fn validate_range_override(
+    user_range: u32,
+    provider_range: u32,
+    puzzle_id: &str,
+) -> anyhow::Result<()> {
+    if user_range > provider_range {
+        return Err(anyhow!(
+            "Range {} bits exceeds puzzle '{}' maximum of {} bits",
+            user_range,
+            puzzle_id,
+            provider_range
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "boha")]
+fn validate_search_bounds(
+    start: &str,
+    range_bits: u32,
+    provider: &provider::ProviderResult,
+) -> anyhow::Result<()> {
+    let (Some(ref provider_start), Some(ref provider_end)) = (&provider.start, &provider.end)
+    else {
+        return Ok(());
+    };
+
+    let start_val = BigUint::parse_bytes(start.as_bytes(), 16)
+        .ok_or_else(|| anyhow!("Invalid hex start value: {}", start))?;
+    let provider_start_val = BigUint::parse_bytes(provider_start.as_bytes(), 16)
+        .ok_or_else(|| anyhow!("Invalid provider start hex"))?;
+    let provider_end_val = BigUint::parse_bytes(provider_end.as_bytes(), 16)
+        .ok_or_else(|| anyhow!("Invalid provider end hex"))?;
+
+    if start_val < provider_start_val {
+        return Err(anyhow!(
+            "Start 0x{} is below puzzle '{}' minimum 0x{}",
+            start,
+            provider.id,
+            provider_start
+        ));
+    }
+
+    let search_end = &start_val + (BigUint::from(1u32) << range_bits);
+    if search_end > provider_end_val {
+        return Err(anyhow!(
+            "Search range [0x{}..0x{:x}] exceeds puzzle '{}' maximum 0x{}",
+            start,
+            search_end,
+            provider.id,
+            provider_end
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "boha"))]
+fn validate_search_bounds(
+    _start: &str,
+    _range_bits: u32,
+    _provider: &provider::ProviderResult,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn print_providers_list() {
+    let providers = provider::supported_providers();
+    if providers.is_empty() {
+        println!("No providers available. Rebuild with --features boha");
+        return;
+    }
+
+    println!("Available puzzles:");
+    println!(
+        "{:<20} {:<45} {:>6} {:>8}",
+        "ID", "Address", "Bits", "Pubkey"
+    );
+    println!("{}", "-".repeat(85));
+
+    for (provider_name, id, address, bits, has_pubkey) in provider::list_available() {
+        let bits_str = bits
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let pubkey_str = if has_pubkey { "yes" } else { "no" };
+        println!(
+            "{:<20} {:<45} {:>6} {:>8}",
+            format!("{}:{}", provider_name, id),
+            address,
+            bits_str,
+            pubkey_str
+        );
+    }
+}
+
 pub fn run(args: Args) -> anyhow::Result<()> {
-    // Configure tracing
     cli::init_tracing(false, args.quiet || args.json);
+
+    if args.list_providers {
+        print_providers_list();
+        return Ok(());
+    }
+
+    let params = resolve_params(&args)?;
 
     if !args.quiet && !args.json {
         info!("Kangaroo ECDLP Solver");
         info!("=====================");
-        info!("Target pubkey: {}", args.pubkey);
-        info!("Search range: {} bits from 0x{}", args.range, args.start);
+        if let Some(ref target) = args.target {
+            info!("Target: {}", target);
+        }
+        info!("Pubkey: {}", params.pubkey_str);
+        info!(
+            "Search range: {} bits from 0x{}",
+            params.range_bits, params.start_str
+        );
     }
 
-    // Parse inputs (common for both CPU and GPU)
-    let pubkey = crypto::parse_pubkey(&args.pubkey)?;
-    let start = crypto::parse_hex_u256(&args.start)?;
-    let range_bits = args.range;
+    let pubkey = crypto::parse_pubkey(&params.pubkey_str)?;
+    let start = crypto::parse_hex_u256(&params.start_str)?;
+    let range_bits = params.range_bits;
 
     if args.cpu {
-        // CPU MODE
         if !args.quiet && !args.json {
             info!("Mode: CPU (Software Solver)");
         }
 
-        // Determine DP bits (CPU needs fewer bits for table efficiency)
-        let dp_bits = args.dp_bits.unwrap_or_else(|| {
-            (range_bits / 2).saturating_sub(2).clamp(8, 20)
-        });
+        let dp_bits = args
+            .dp_bits
+            .unwrap_or_else(|| (range_bits / 2).saturating_sub(2).clamp(8, 20));
 
         if !args.quiet && !args.json {
             info!("DP bits: {}", dp_bits);
         }
 
-        // start is [u8; 32] (little-endian in lib internal, need BE for cpu_solver)
         let mut start_be = start;
         start_be.reverse();
 
-        let mut solver = cpu::CpuKangarooSolver::new_full(pubkey.clone(), start_be, range_bits, dp_bits);
+        let mut solver =
+            cpu::CpuKangarooSolver::new_full(pubkey.clone(), start_be, range_bits, dp_bits);
 
-        // Progress bar for CPU
         let expected_ops = (1u128 << (range_bits / 2)) as u64;
         let pb = if args.quiet || args.json {
             ProgressBar::hidden()
@@ -149,14 +328,18 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         };
 
         let start_time = Instant::now();
-        let result = solver.solve(std::time::Duration::from_secs(3600)); // 1 hour timeout
+        let result = solver.solve(std::time::Duration::from_secs(3600));
         let duration = start_time.elapsed();
 
         if let Some(private_key) = result {
             pb.finish_with_message("FOUND!");
             let key_hex = hex::encode(&private_key);
             let key_hex_trimmed = key_hex.trim_start_matches('0');
-            let key_hex_display = if key_hex_trimmed.is_empty() { "0" } else { key_hex_trimmed };
+            let key_hex_display = if key_hex_trimmed.is_empty() {
+                "0"
+            } else {
+                key_hex_trimmed
+            };
 
             if args.json {
                 let total_ops = solver.total_ops();
@@ -192,11 +375,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             return Ok(());
         } else {
             pb.finish_with_message("TIMEOUT");
-            return Err(anyhow::anyhow!("Key not found within timeout"));
+            return Err(anyhow!("Key not found within timeout"));
         }
     }
 
-    // GPU MODE
     let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(args.gpu))?;
     let device_name = gpu_context.device_name().to_string();
     if !args.quiet && !args.json {
@@ -204,12 +386,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Compute units: {}", gpu_context.compute_units());
     }
 
-    // Parse inputs
-    let pubkey = crypto::parse_pubkey(&args.pubkey)?;
-    let start = crypto::parse_hex_u256(&args.start)?;
-    let range_bits = args.range;
-
-    // Auto-configure DP bits
     let num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
     let dp_bits = args.dp_bits.unwrap_or_else(|| {
         let auto_dp = (range_bits / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
@@ -221,7 +397,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Kangaroos: {}", num_k);
     }
 
-    // Create kangaroo solver
     let mut solver = solver::KangarooSolver::new(
         gpu_context,
         pubkey.clone(),
@@ -231,7 +406,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         num_k,
     )?;
 
-    // Progress bar
     let expected_ops = (1u128 << (range_bits / 2)) as u64;
     let pb = if args.quiet || args.json {
         ProgressBar::hidden()
@@ -241,7 +415,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         pb
     };
 
-    // Main loop
     if !args.quiet && !args.json {
         info!("Starting search...");
     }
@@ -270,7 +443,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 key_hex_trimmed
             };
 
-            // Verify
             if !crypto::verify_key(&private_key, &pubkey) {
                 error!("Verification FAILED - this is a bug!");
                 continue;
@@ -312,7 +484,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        // Check max operations limit
         if total_ops >= max_ops {
             pb.finish_with_message("LIMIT REACHED");
             if !args.quiet && !args.json {
@@ -321,7 +492,53 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     max_ops
                 );
             }
-            return Err(anyhow::anyhow!("Key not found within {} operations", max_ops));
+            return Err(anyhow!("Key not found within {} operations", max_ops));
         }
+    }
+}
+
+#[cfg(all(test, feature = "boha"))]
+mod tests {
+    use super::*;
+
+    fn make_provider_result(start: &str, end: &str) -> provider::ProviderResult {
+        provider::ProviderResult {
+            id: "test/1".to_string(),
+            pubkey: None,
+            start: Some(start.to_string()),
+            end: Some(end.to_string()),
+            range_bits: Some(66),
+        }
+    }
+
+    #[test]
+    fn test_validate_search_bounds_valid() {
+        let pr = make_provider_result("20000000000000000", "40000000000000000");
+        assert!(validate_search_bounds("20000000000000000", 64, &pr).is_ok());
+    }
+
+    #[test]
+    fn test_validate_search_bounds_start_below_minimum() {
+        let pr = make_provider_result("20000000000000000", "40000000000000000");
+        let result = validate_search_bounds("10000000000000000", 64, &pr);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("below"));
+    }
+
+    #[test]
+    fn test_validate_search_bounds_range_exceeds_end() {
+        let pr = make_provider_result("20000000000000000", "40000000000000000");
+        // start at 0x30... with range 66 bits would exceed 0x40...
+        let result = validate_search_bounds("30000000000000000", 66, &pr);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn test_validate_search_bounds_exact_fit() {
+        // Range [0x20..., 0x40...) is exactly 2^65 wide
+        // Starting at 0x20... with range 65 bits should fit exactly
+        let pr = make_provider_result("20000000000000000", "40000000000000000");
+        assert!(validate_search_bounds("20000000000000000", 65, &pr).is_ok());
     }
 }

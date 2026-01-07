@@ -3,9 +3,9 @@
 mod buffers;
 mod pipeline;
 
-pub use crate::gpu_crypto::{GpuContext, GpuAffinePoint};
-pub use pipeline::KangarooPipeline;
+pub use crate::gpu_crypto::{GpuAffinePoint, GpuContext};
 pub use buffers::GpuBuffers;
+pub use pipeline::KangarooPipeline;
 
 use bytemuck::{Pod, Zeroable};
 

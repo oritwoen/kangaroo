@@ -69,7 +69,15 @@ impl KangarooSolver {
         num_kangaroos: u32,
     ) -> Result<Self> {
         // Clone is cheap - wgpu Device/Queue are Arc-wrapped
-        Self::new_internal(ctx.clone(), pubkey, start, range_bits, dp_bits, num_kangaroos, false)
+        Self::new_internal(
+            ctx.clone(),
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            false,
+        )
     }
 
     #[allow(dead_code)]
@@ -82,11 +90,24 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        Self::new_with_pipeline(&shared.ctx, &shared.pipeline, pubkey, start, range_bits, dp_bits, num_kangaroos)
+        Self::new_with_pipeline(
+            &shared.ctx,
+            &shared.pipeline,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+        )
     }
 
     /// Select steps per GPU dispatch, respecting DP buffer capacity
-    fn select_steps_per_call(optimal_steps: u32, num_kangaroos: u32, dp_bits: u32, max_dps: u32) -> u32 {
+    fn select_steps_per_call(
+        optimal_steps: u32,
+        num_kangaroos: u32,
+        dp_bits: u32,
+        max_dps: u32,
+    ) -> u32 {
         if num_kangaroos == 0 || optimal_steps == 0 {
             return 0;
         }
@@ -126,7 +147,7 @@ impl KangarooSolver {
             dp_bits,
             MAX_DISTINGUISHED_POINTS,
         );
-        
+
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
@@ -181,11 +202,17 @@ impl KangarooSolver {
         num_kangaroos: u32,
         verbose: bool,
     ) -> Result<Self> {
-        if verbose { info!("Creating pipeline..."); }
+        if verbose {
+            info!("Creating pipeline...");
+        }
         let pipeline = KangarooPipeline::new(&ctx)?;
-        if verbose { info!("Pipeline created"); }
+        if verbose {
+            info!("Pipeline created");
+        }
 
-        if verbose { info!("Generating jump table..."); }
+        if verbose {
+            info!("Generating jump table...");
+        }
         let jump_table_size = 256u32;
         let (jump_points, jump_distances) = generate_jump_table(range_bits);
         if verbose {
@@ -197,7 +224,9 @@ impl KangarooSolver {
 
         // Create DP mask
         let dp_mask = create_dp_mask(dp_bits);
-        if verbose { info!("DP mask created"); }
+        if verbose {
+            info!("DP mask created");
+        }
 
         // Config
         // Use optimal steps per call from context (calibrated for 2s limit)
@@ -207,7 +236,7 @@ impl KangarooSolver {
             dp_bits,
             MAX_DISTINGUISHED_POINTS,
         );
-        
+
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
@@ -216,10 +245,14 @@ impl KangarooSolver {
             jump_table_size,
             _padding: 0,
         };
-        if verbose { info!("Config created: steps_per_call={}", steps_per_call); }
+        if verbose {
+            info!("Config created: steps_per_call={}", steps_per_call);
+        }
 
         // Create buffers
-        if verbose { info!("Creating GPU buffers..."); }
+        if verbose {
+            info!("Creating GPU buffers...");
+        }
         let max_dps = MAX_DISTINGUISHED_POINTS;
         let buffers = GpuBuffers::new(
             &ctx,
@@ -380,7 +413,10 @@ impl KangarooSolver {
             tx.send(result).unwrap();
         });
 
-        self.ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.ctx
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         rx.recv()??;
 
         let data = slice.get_mapped_range();
@@ -401,7 +437,10 @@ impl KangarooSolver {
             tx.send(result).unwrap();
         });
 
-        self.ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.ctx
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         rx.recv()??;
 
         let data = slice.get_mapped_range();
@@ -438,7 +477,12 @@ impl KangarooSolver {
 
         for &steps in &candidates {
             // Check DP buffer constraint first
-            let max_steps = Self::select_steps_per_call(steps, self.num_kangaroos, dp_bits, MAX_DISTINGUISHED_POINTS);
+            let max_steps = Self::select_steps_per_call(
+                steps,
+                self.num_kangaroos,
+                dp_bits,
+                MAX_DISTINGUISHED_POINTS,
+            );
             if max_steps < steps {
                 // Would overflow DP buffer, stop here
                 break;
@@ -508,7 +552,10 @@ impl KangarooSolver {
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
-        self.ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.ctx
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
     }
 }
 
@@ -532,14 +579,16 @@ mod tests {
     #[test]
     fn caps_steps_when_dp_buffer_would_overflow() {
         // With dense DPs (8 bits) and many kangaroos, a large steps_per_call would overflow the DP buffer.
-        let steps = KangarooSolver::select_steps_per_call(4_096, 16_384, 8, MAX_DISTINGUISHED_POINTS);
+        let steps =
+            KangarooSolver::select_steps_per_call(4_096, 16_384, 8, MAX_DISTINGUISHED_POINTS);
         assert_eq!(steps, 921);
     }
 
     #[test]
     fn keeps_optimal_when_within_budget() {
         // Higher DP bits reduce DP density; we should keep the GPU-optimal step count.
-        let steps = KangarooSolver::select_steps_per_call(4_096, 4_096, 16, MAX_DISTINGUISHED_POINTS);
+        let steps =
+            KangarooSolver::select_steps_per_call(4_096, 4_096, 16, MAX_DISTINGUISHED_POINTS);
         assert_eq!(steps, 4_096);
     }
 }

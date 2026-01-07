@@ -2,12 +2,12 @@
 //!
 //! Run with: cargo test --release cpu_vs_gpu -- --nocapture --ignored
 
-use kangaroo::{parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver};
 use k256::elliptic_curve::ops::MulByGenerator;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::PrimeField;
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
+use kangaroo::{parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -176,9 +176,24 @@ fn cpu_vs_gpu_benchmark() {
     println!("╚══════════════════════════════════════════════════════════════════╝");
 
     let puzzles = [
-        (20, "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c", "0x80000", "d2c55"),
-        (21, "031a746c78f72754e0be046186df8a20cdce5c79b2eda76013c647af08d306e49e", "0x100000", "1ba534"),
-        (22, "023ed96b524db5ff4fe007ce730366052b7c511dc566227d929070b9ce917abb43", "0x200000", "2de40f"),
+        (
+            20,
+            "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c",
+            "0x80000",
+            "d2c55",
+        ),
+        (
+            21,
+            "031a746c78f72754e0be046186df8a20cdce5c79b2eda76013c647af08d306e49e",
+            "0x100000",
+            "1ba534",
+        ),
+        (
+            22,
+            "023ed96b524db5ff4fe007ce730366052b7c511dc566227d929070b9ce917abb43",
+            "0x200000",
+            "2de40f",
+        ),
     ];
 
     println!("\n--- CPU-only Solver ---\n");
@@ -220,7 +235,8 @@ fn cpu_vs_gpu_benchmark() {
         let dp_bits = (range_bits / 2).saturating_sub(2).clamp(8, 20);
 
         let ctx = pollster::block_on(GpuContext::new(0)).expect("GPU context");
-        let mut solver = KangarooSolver::new(ctx, pubkey.clone(), start, range_bits, dp_bits, 4096).expect("solver");
+        let mut solver = KangarooSolver::new(ctx, pubkey.clone(), start, range_bits, dp_bits, 4096)
+            .expect("solver");
 
         let start_time = Instant::now();
         let timeout = Duration::from_secs(120);
@@ -295,8 +311,14 @@ fn cpu_vs_gpu_benchmark() {
     let throughput_ratio = gpu_avg_ops / cpu_avg_ops;
 
     println!("\nTotals:");
-    println!("  CPU: {:.2}s total, {:.0} avg ops/s", cpu_total_time, cpu_avg_ops);
-    println!("  GPU: {:.2}s total, {:.0} avg ops/s", gpu_total_time, gpu_avg_ops);
+    println!(
+        "  CPU: {:.2}s total, {:.0} avg ops/s",
+        cpu_total_time, cpu_avg_ops
+    );
+    println!(
+        "  GPU: {:.2}s total, {:.0} avg ops/s",
+        gpu_total_time, gpu_avg_ops
+    );
     println!("\n  Time speedup: {:.1}× faster", overall_speedup);
     println!("  Throughput:   {:.1}× higher", throughput_ratio);
 }

@@ -37,6 +37,14 @@ serde_json = "1.0"
 # Async (for GPU buffer reads)
 futures = "0.3"
 
+# Data providers (optional)
+boha = { version = "0.11", optional = true }
+num-bigint = { version = "0.4", optional = true }
+
+[features]
+default = []
+boha = ["dep:boha", "dep:num-bigint"]
+
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"

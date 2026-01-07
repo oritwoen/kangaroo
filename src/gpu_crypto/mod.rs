@@ -1,8 +1,8 @@
 pub mod context;
 pub mod shaders;
 
-pub use context::GpuContext;
 use bytemuck::{Pod, Zeroable};
+pub use context::GpuContext;
 
 /// GPU Affine Point (x, y coordinates in 32-bit limbs)
 #[repr(C)]

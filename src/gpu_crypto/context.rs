@@ -47,7 +47,7 @@ impl GpuContext {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 // memory_hints is a newer feature (wgpu 22+), ensuring we use recent version
-                memory_hints: wgpu::MemoryHints::Performance, 
+                memory_hints: wgpu::MemoryHints::Performance,
                 ..Default::default()
             })
             .await
@@ -85,25 +85,30 @@ impl GpuContext {
         let workgroup_size = 64u32;
         // Conservative limit to prevent TDR (Timeout Detection and Recovery) on Windows
         // or just freezing the screen on Linux
-        let workgroups = self.max_workgroups().min(65535).min(4096); 
+        let workgroups = self.max_workgroups().min(65535).min(4096);
         workgroup_size * workgroups
     }
-    
+
     pub fn compute_units(&self) -> u32 {
         self.max_workgroups()
     }
-    
+
     pub fn optimal_kangaroos(&self) -> u32 {
         self.optimal_batch_size()
     }
-    
+
     pub fn optimal_steps_per_call(&self) -> u32 {
         // Extremely conservative default for heavy shaders
         16
     }
 
     /// Create an uninitialized buffer of type T with count elements
-    pub fn create_buffer<T: bytemuck::Pod>(&self, label: &str, usage: wgpu::BufferUsages, count: u64) -> wgpu::Buffer {
+    pub fn create_buffer<T: bytemuck::Pod>(
+        &self,
+        label: &str,
+        usage: wgpu::BufferUsages,
+        count: u64,
+    ) -> wgpu::Buffer {
         let size = count * std::mem::size_of::<T>() as u64;
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
@@ -114,41 +119,55 @@ impl GpuContext {
     }
 
     /// Create a buffer initialized with data
-    pub fn create_buffer_init<T: bytemuck::Pod>(&self, label: &str, usage: wgpu::BufferUsages, data: &[T]) -> wgpu::Buffer {
-        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(data),
-            usage,
-        })
+    pub fn create_buffer_init<T: bytemuck::Pod>(
+        &self,
+        label: &str,
+        usage: wgpu::BufferUsages,
+        data: &[T],
+    ) -> wgpu::Buffer {
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(data),
+                usage,
+            })
     }
 
     /// Create a shader module from multiple source strings
     pub fn create_shader_module(&self, label: &str, sources: &[&str]) -> wgpu::ShaderModule {
         let source = sources.join("\n\n");
-        self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(label),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        })
+        self.device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            })
     }
 
     /// Read data from a mappable buffer (async)
-    pub async fn read_buffer<T: bytemuck::Pod + Clone>(&self, buffer: &wgpu::Buffer, offset: u64, count: u64) -> Result<Vec<T>> {
+    pub async fn read_buffer<T: bytemuck::Pod + Clone>(
+        &self,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        count: u64,
+    ) -> Result<Vec<T>> {
         let size = count * std::mem::size_of::<T>() as u64;
-        let slice = buffer.slice(offset..offset+size);
-        
+        let slice = buffer.slice(offset..offset + size);
+
         let (tx, rx) = futures::channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        
-        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         rx.await??;
-        
+
         let data = slice.get_mapped_range();
         let result: Vec<T> = bytemuck::cast_slice(&data).to_vec();
         drop(data);
         buffer.unmap();
-        
+
         Ok(result)
     }
 }

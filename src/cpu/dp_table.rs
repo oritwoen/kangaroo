@@ -72,8 +72,16 @@ impl DPTable {
                 // Same affine X - check if tame vs wild collision
                 if existing.ktype == dp.ktype {
                     // Same type collision - log for debugging
-                    let ktype_str = if dp.ktype == 0 { "tame-tame" } else { "wild-wild" };
-                    tracing::debug!("Same-type collision ({}): affine_x={}", ktype_str, hex::encode(&affine_x[..8]));
+                    let ktype_str = if dp.ktype == 0 {
+                        "tame-tame"
+                    } else {
+                        "wild-wild"
+                    };
+                    tracing::debug!(
+                        "Same-type collision ({}): affine_x={}",
+                        ktype_str,
+                        hex::encode(&affine_x[..8])
+                    );
                     return None;
                 }
                 let key = compute_private_key(

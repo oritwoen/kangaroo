@@ -82,14 +82,14 @@ fn run_solve(puzzle: &PuzzleConfig, num_kangaroos: u32) {
 /// Benchmark 1: Performance across different puzzle difficulties
 fn bench_complexity(c: &mut Criterion) {
     let mut group = c.benchmark_group("puzzle_complexity");
-    
-    // ECDLP is probabilistic and takes time. 
+
+    // ECDLP is probabilistic and takes time.
     // We use a small sample size but longer measurement time.
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(30));
 
     // Use a fixed kangaroo count for complexity comparison to be fair
-    let fixed_kangaroos = 16384; 
+    let fixed_kangaroos = 16384;
 
     for puzzle in PUZZLES {
         // Estimate workload as sqrt(range) for throughput reporting
@@ -97,7 +97,7 @@ fn bench_complexity(c: &mut Criterion) {
         let expected_ops = (range_size as f64).sqrt() as u64;
 
         group.throughput(Throughput::Elements(expected_ops));
-        
+
         group.bench_with_input(
             BenchmarkId::new("solve", format!("{}bit", puzzle.range_bits)),
             puzzle,
@@ -116,17 +116,13 @@ fn bench_tuning(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(20));
 
     // Use Puzzle 20 as the base for tuning tests (fastest to iterate)
-    let puzzle = PUZZLES[0]; 
+    let puzzle = PUZZLES[0];
     let kangaroo_counts = [4096, 8192, 16384, 32768];
 
     for &count in &kangaroo_counts {
-        group.bench_with_input(
-            BenchmarkId::new("kangaroos", count),
-            &count,
-            |b, &k| {
-                b.iter(|| run_solve(&puzzle, k));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("kangaroos", count), &count, |b, &k| {
+            b.iter(|| run_solve(&puzzle, k));
+        });
     }
     group.finish();
 }

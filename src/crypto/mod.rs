@@ -106,8 +106,8 @@ pub fn compute_hash160(data: &[u8]) -> [u8; 20] {
 /// Compute Bitcoin address from compressed public key
 #[allow(dead_code)]
 pub fn pubkey_to_address(pubkey: &[u8]) -> String {
-    let compressed = CompressedPublicKey::from_slice(pubkey)
-        .expect("Invalid compressed public key");
+    let compressed =
+        CompressedPublicKey::from_slice(pubkey).expect("Invalid compressed public key");
     Address::p2pkh(compressed, Network::Bitcoin).to_string()
 }
 

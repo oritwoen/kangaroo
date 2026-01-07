@@ -13,6 +13,7 @@ GPU-accelerated Pollard's Kangaroo algorithm for solving the Elliptic Curve Disc
 - **Pure Rust** implementation with WGSL compute shaders
 - **Distinguished Points** optimization for efficient collision detection
 - **CPU fallback** for testing and comparison
+- **Data providers** for puzzle sources (boha integration)
 
 ## Why This Project?
 
@@ -40,23 +41,25 @@ cd kangaroo
 cargo build --release
 ```
 
+### With boha provider
+
+```bash
+cargo build --release --features boha
+```
+
 ## Usage
 
 ```bash
 kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 ```
 
-### Required Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `-p, --pubkey` | Target public key (compressed hex, 33 bytes) |
-| `-s, --start` | Start of search range (hex, without 0x prefix) |
-
-### Optional Arguments
+### Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
+| `-t, --target` | - | Data provider target (e.g., `boha:b1000/135`) |
+| `-p, --pubkey` | - | Target public key (compressed hex, 33 bytes) |
+| `-s, --start` | 0 | Start of search range (hex, without 0x prefix) |
 | `-r, --range` | 32 | Search range in bits (key is in [start, start + 2^range]) |
 | `-d, --dp-bits` | auto | Distinguished point bits |
 | `-k, --kangaroos` | auto | Number of parallel kangaroos |
@@ -66,10 +69,26 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `--max-ops` | 0 | Max operations (0 = unlimited) |
 | `--cpu` | false | Use CPU solver instead of GPU |
 | `--json` | false | Output benchmark results in JSON format |
+| `--list-providers` | false | List available puzzles from providers |
 
-### Example
+Either `--target` or `--pubkey` is required.
 
-Find a private key in a 40-bit range:
+### Examples
+
+**Using data provider (boha):**
+
+```bash
+# Solve puzzle using boha data (auto: pubkey, start, range)
+kangaroo --target boha:b1000/66
+
+# Override range (search smaller subset)
+kangaroo --target boha:b1000/66 --range 60
+
+# List available puzzles
+kangaroo --list-providers
+```
+
+**Manual parameters:**
 
 ```bash
 kangaroo \
@@ -147,6 +166,30 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Data Providers
+
+Kangaroo supports external data providers for puzzle sources. Providers supply pubkey, key range, and other puzzle metadata.
+
+### boha (optional feature)
+
+[boha](https://github.com/oritwoen/boha) provides crypto puzzle data including Bitcoin Puzzle Transaction (b1000).
+
+Build with boha support:
+```bash
+cargo build --release --features boha
+```
+
+Usage:
+```bash
+# Solve specific puzzle
+kangaroo --target boha:b1000/66
+
+# List solvable puzzles (unsolved with known pubkey)
+kangaroo --list-providers
+```
+
+Provider validates range overrides - you cannot search outside the puzzle's key range.
+
 ## Architecture
 
 ```
@@ -154,6 +197,9 @@ src/
 ├── main.rs              # CLI entry point
 ├── lib.rs               # Library entry point
 ├── cli.rs               # CLI utilities
+├── provider/
+│   ├── mod.rs           # Provider system interface
+│   └── boha.rs          # boha provider (feature-gated)
 ├── cpu/
 │   ├── solver.rs        # GPU solver coordination
 │   ├── cpu_solver.rs    # Pure CPU solver
@@ -187,3 +233,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 - [JeanLucPons/Kangaroo](https://github.com/JeanLucPons/Kangaroo) - CUDA implementation (NVIDIA only)
 - [RCKangaroo](https://github.com/RetiredC/RCKangaroo) - CUDA implementation (NVIDIA only)
+- [boha](https://github.com/oritwoen/boha) - Crypto puzzles and bounties data library

@@ -35,42 +35,39 @@ impl GpuBuffers {
         let config_buffer = ctx.create_buffer_init(
             "Config Buffer",
             BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            &[*config]
+            &[*config],
         );
 
         // Jump points buffer (storage)
-        let jump_points_buffer = ctx.create_buffer_init(
-            "Jump Points Buffer",
-            BufferUsages::STORAGE,
-            jump_points
-        );
+        let jump_points_buffer =
+            ctx.create_buffer_init("Jump Points Buffer", BufferUsages::STORAGE, jump_points);
 
         // Jump distances buffer (storage)
         let jump_distances_buffer = ctx.create_buffer_init(
             "Jump Distances Buffer",
             BufferUsages::STORAGE,
-            jump_distances
+            jump_distances,
         );
 
         // Kangaroos buffer
         let kangaroos_buffer = ctx.create_buffer::<GpuKangaroo>(
             "Kangaroos Buffer",
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            num_kangaroos as u64
+            num_kangaroos as u64,
         );
 
         // DP buffer
         let dp_buffer = ctx.create_buffer::<GpuDistinguishedPoint>(
             "DP Buffer",
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            max_dps as u64
+            max_dps as u64,
         );
 
         // DP count buffer (atomic u32)
         let dp_count_buffer = ctx.create_buffer_init(
             "DP Count Buffer",
             BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            &[0u32]
+            &[0u32],
         );
 
         // Staging buffer for readback
@@ -78,11 +75,11 @@ impl GpuBuffers {
         let kangaroos_size = (num_kangaroos as usize) * std::mem::size_of::<GpuKangaroo>();
         let dp_size = (max_dps as usize) * std::mem::size_of::<GpuDistinguishedPoint>();
         let staging_size = std::cmp::max(kangaroos_size, dp_size) as u64 + 4;
-        
+
         let staging_buffer = ctx.create_buffer::<u8>(
             "Staging Buffer",
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            staging_size
+            staging_size,
         );
 
         // Create bind group

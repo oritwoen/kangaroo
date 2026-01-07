@@ -32,7 +32,9 @@ pub fn default_progress_style() -> ProgressStyle {
 /// Returns the standard progress bar style with a message field.
 pub fn default_progress_style_with_msg() -> ProgressStyle {
     ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+        .template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}",
+        )
         .expect("Invalid progress bar template")
         .progress_chars("#>-")
 }

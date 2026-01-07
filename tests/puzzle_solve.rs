@@ -6,9 +6,7 @@
 mod fixtures;
 
 use fixtures::{get_smoke_test_puzzle, get_test_puzzles, PuzzleTestCase};
-use kangaroo::{
-    full_verify, parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver,
-};
+use kangaroo::{full_verify, parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver};
 use std::time::{Duration, Instant};
 
 /// Test configuration
