@@ -110,6 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "boha")]
     fn test_is_provider_valid() {
         assert!(is_provider("boha:b1000/135"));
         assert!(is_provider("boha:b1000/66"));
