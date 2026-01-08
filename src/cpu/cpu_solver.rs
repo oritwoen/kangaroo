@@ -134,7 +134,7 @@ impl CpuKangarooSolver {
 
         let jump_points: Vec<ProjectivePoint> = jump_distances
             .iter()
-            .map(|s| ProjectivePoint::mul_by_generator(s))
+            .map(ProjectivePoint::mul_by_generator)
             .collect();
 
         loop {
@@ -145,8 +145,8 @@ impl CpuKangarooSolver {
             // Tame step
             let tame_x = get_x_low(&tame_pos);
             let jump_idx = (tame_x & 15) as usize;
-            tame_pos = tame_pos + jump_points[jump_idx];
-            tame_dist = tame_dist + jump_distances[jump_idx];
+            tame_pos += jump_points[jump_idx];
+            tame_dist += jump_distances[jump_idx];
             self.ops += 1;
 
             // Check DP
@@ -170,8 +170,8 @@ impl CpuKangarooSolver {
             // Wild step
             let wild_x = get_x_low(&wild_pos);
             let jump_idx = (wild_x & 15) as usize;
-            wild_pos = wild_pos + jump_points[jump_idx];
-            wild_dist = wild_dist + jump_distances[jump_idx];
+            wild_pos += jump_points[jump_idx];
+            wild_dist += jump_distances[jump_idx];
             self.ops += 1;
 
             // Check DP

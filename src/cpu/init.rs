@@ -31,11 +31,12 @@ pub fn generate_jump_table(range_bits: u32) -> (Vec<GpuAffinePoint>, Vec<[u32; 8
 
         // Strategy: fill bytes up to mean_exp / 8
         // We need ceil(mean_exp / 8) bytes to cover mean_exp bits
-        let num_bytes = (mean_exp + 7) / 8;
+        let num_bytes = mean_exp.div_ceil(8);
         let limit_byte = (num_bytes as usize).min(32);
         let mut scalar_bytes = [0u8; 32];
 
         // Use the hash to fill bytes
+        #[allow(clippy::needless_range_loop)]
         for b in (32 - limit_byte)..32 {
             h = (h ^ (b as u32)).wrapping_mul(0x01000193);
             scalar_bytes[b] = (h & 0xFF) as u8;

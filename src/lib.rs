@@ -315,8 +315,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let mut start_be = start;
         start_be.reverse();
 
-        let mut solver =
-            cpu::CpuKangarooSolver::new_full(pubkey.clone(), start_be, range_bits, dp_bits);
+        let mut solver = cpu::CpuKangarooSolver::new_full(pubkey, start_be, range_bits, dp_bits);
 
         let expected_ops = (1u128 << (range_bits / 2)) as u64;
         let pb = if args.quiet || args.json {
@@ -397,14 +396,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Kangaroos: {}", num_k);
     }
 
-    let mut solver = solver::KangarooSolver::new(
-        gpu_context,
-        pubkey.clone(),
-        start,
-        range_bits,
-        dp_bits,
-        num_k,
-    )?;
+    let mut solver =
+        solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?;
 
     let expected_ops = (1u128 << (range_bits / 2)) as u64;
     let pb = if args.quiet || args.json {
