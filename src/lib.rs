@@ -304,11 +304,11 @@ const BENCHMARK_CASES: &[BenchmarkCase] = &[
     },
 ];
 
-fn run_benchmark() -> anyhow::Result<()> {
+fn run_benchmark(gpu_index: u32) -> anyhow::Result<()> {
     println!("Kangaroo Benchmark Suite");
     println!("========================\n");
 
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(0))?;
+    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index))?;
     println!("GPU: {}", gpu_context.device_name());
     println!("Compute units: {}\n", gpu_context.compute_units());
 
@@ -369,7 +369,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     if args.benchmark {
-        return run_benchmark();
+        return run_benchmark(args.gpu);
     }
 
     let params = resolve_params(&args)?;
