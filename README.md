@@ -111,15 +111,7 @@ The Pollard's Kangaroo algorithm solves the discrete logarithm problem in O(√n
 
 Expected operations: ~2^(range_bits/2)
 
-| Range | Expected Ops | Example Time* |
-|-------|-------------|---------------|
-| 32 bits | ~65K | < 1 second |
-| 40 bits | ~1M | seconds |
-| 50 bits | ~33M | minutes |
-| 60 bits | ~1B | hours |
-| 70 bits | ~34B | days |
-
-*Times vary significantly based on GPU performance
+Run `kangaroo --benchmark` to test your hardware. See [BENCHMARK.md](BENCHMARK.md) for results on various GPUs.
 
 ## Use Cases
 
