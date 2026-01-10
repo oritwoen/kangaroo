@@ -57,18 +57,6 @@ impl KangarooSolver {
         Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
     }
 
-    /// Create a new solver with affine coordinates (faster)
-    pub fn new_affine(
-        ctx: GpuContext,
-        pubkey: Point,
-        start: U256,
-        range_bits: u32,
-        dp_bits: u32,
-        num_kangaroos: u32,
-    ) -> Result<Self> {
-        Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
-    }
-
     #[allow(dead_code)]
     pub fn new_with_context(
         ctx: &GpuContext,
