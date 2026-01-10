@@ -12,11 +12,11 @@ kangaroo --benchmark
 
 | Range | Time | Ops | Rate |
 |-------|------|-----|------|
-| 32-bit | 1.79s | 4194304 | 2.35 M/s |
-| 40-bit | 8.78s | 29360128 | 3.34 M/s |
-| 48-bit | 60.08s | 222298112 | 3.70 M/s |
+| 32-bit | 1.29s | 4,194,304 | 3.26 M/s |
+| 40-bit | 5.57s | 29,360,128 | 5.27 M/s |
+| 48-bit | 40.43s | 222,298,112 | 5.50 M/s |
 
-*Version: 0.2.0*
+*Version: 0.3.0 (affine batch addition)*
 
 ## Contributing
 
