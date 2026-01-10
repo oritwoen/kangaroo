@@ -46,7 +46,7 @@ pub struct KangarooSolver {
 }
 
 impl KangarooSolver {
-    /// Create a new solver (with verbose logging)
+    /// Create a new solver with Jacobian coordinates (default)
     pub fn new(
         ctx: GpuContext,
         pubkey: Point,
@@ -55,7 +55,37 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            false,
+            true,
+        )
+    }
+
+    /// Create a new solver with affine coordinates (faster)
+    pub fn new_affine(
+        ctx: GpuContext,
+        pubkey: Point,
+        start: U256,
+        range_bits: u32,
+        dp_bits: u32,
+        num_kangaroos: u32,
+    ) -> Result<Self> {
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            true,
+            true,
+        )
     }
 
     #[allow(dead_code)]
@@ -76,7 +106,8 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
-            false,
+            false, // use_affine
+            false, // verbose
         )
     }
 
@@ -200,12 +231,17 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
+        use_affine: bool,
         verbose: bool,
     ) -> Result<Self> {
         if verbose {
             info!("Creating pipeline...");
         }
-        let pipeline = KangarooPipeline::new(&ctx)?;
+        let pipeline = if use_affine {
+            KangarooPipeline::new_affine(&ctx)?
+        } else {
+            KangarooPipeline::new(&ctx)?
+        };
         if verbose {
             info!("Pipeline created");
         }

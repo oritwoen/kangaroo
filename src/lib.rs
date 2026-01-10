@@ -89,6 +89,10 @@ pub struct Args {
     /// Run benchmark suite and print results
     #[arg(long)]
     benchmark: bool,
+
+    /// Use affine coordinates (faster than default Jacobian)
+    #[arg(long)]
+    affine: bool,
 }
 
 #[derive(Serialize)]
@@ -488,8 +492,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Kangaroos: {}", num_k);
     }
 
-    let mut solver =
-        solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?;
+    let mut solver = if args.affine {
+        solver::KangarooSolver::new_affine(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+    } else {
+        solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+    };
 
     let expected_ops = (1u128 << (range_bits / 2)) as u64;
     let pb = if args.quiet || args.json {
