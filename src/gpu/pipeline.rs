@@ -18,7 +18,7 @@ impl KangarooPipeline {
         info!("Loading shader sources...");
 
         let field = crate::gpu_crypto::shaders::FIELD_WGSL;
-        let curve = crate::gpu_crypto::shaders::CURVE_JACOBIAN_WGSL;
+        let curve = crate::gpu_crypto::shaders::CURVE_WGSL;
         let kangaroo = include_str!("../shaders/kangaroo_affine.wgsl");
 
         info!("Creating shader module...");

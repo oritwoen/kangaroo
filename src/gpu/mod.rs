@@ -25,19 +25,18 @@ pub struct GpuConfig {
 pub struct GpuKangaroo {
     pub x: [u32; 8],
     pub y: [u32; 8],
-    pub z: [u32; 8],
     pub dist: [u32; 8],
     pub ktype: u32,
     pub is_active: u32,
-    pub _padding: [u32; 2],
+    pub _padding: [u32; 6],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GpuDistinguishedPoint {
     pub x: [u32; 8],
-    pub z: [u32; 8],
     pub dist: [u32; 8],
     pub ktype: u32,
     pub kangaroo_id: u32,
+    pub _padding: [u32; 6],
 }

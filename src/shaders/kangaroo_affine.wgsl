@@ -17,24 +17,22 @@ struct Config {
     _padding: u32
 }
 
-// Kangaroo state - uses affine coordinates (no Z needed)
 // Must match Rust GpuKangaroo struct layout!
 struct Kangaroo {
-    x: array<u32, 8>,           // Affine X (32 bytes)
-    y: array<u32, 8>,           // Affine Y (32 bytes)
-    z: array<u32, 8>,           // Unused in affine mode (kept for struct compatibility)
-    dist: array<u32, 8>,        // Distance traveled (32 bytes)
-    ktype: u32,                 // 0 = Tame, 1 = Wild
+    x: array<u32, 8>,
+    y: array<u32, 8>,
+    dist: array<u32, 8>,
+    ktype: u32,
     is_active: u32,
-    _padding: array<u32, 2>     // Align to 16 bytes
+    _padding: array<u32, 6>
 }
 
 struct DistinguishedPoint {
-    x: array<u32, 8>,           // Affine X
-    z: array<u32, 8>,           // Always fe_one() in affine mode
+    x: array<u32, 8>,
     dist: array<u32, 8>,
     ktype: u32,
     kangaroo_id: u32,
+    _padding: array<u32, 6>
 }
 
 // -----------------------------------------------------------------------------
@@ -63,10 +61,10 @@ fn store_dp(k: Kangaroo, kangaroo_id: u32) {
     if (idx < 65536u) {
         var dp: DistinguishedPoint;
         dp.x = k.x;
-        dp.z = fe_one();  // Always 1 in affine mode
         dp.dist = k.dist;
         dp.ktype = k.ktype;
         dp.kangaroo_id = kangaroo_id;
+        dp._padding = array<u32, 6>(0u, 0u, 0u, 0u, 0u, 0u);
         dp_buffer[idx] = dp;
     }
 }
@@ -156,7 +154,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         // =====================================================================
         
         // 1. Compute dx = x_jump - x_point and store in shared memory
-        let dx = fe_sub(jump_point.x, px);
+        //    If dx=0 (point equals jump point), use 1 to avoid division by zero.
+        //    This is astronomically unlikely (1/2^256) and would just skip one jump.
+        var dx = fe_sub(jump_point.x, px);
+        if (fe_is_zero(dx)) {
+            dx = fe_one();
+        }
         shared_dx[lid] = dx;
         workgroupBarrier();
 
@@ -203,7 +206,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 if ((px[0] & config.dp_mask_lo.x) == 0u) {
                     k.x = px;
                     k.y = py;
-                    k.z = fe_one();
                     store_dp(k, kid);
                     dp_stored = true;
                 }
@@ -223,7 +225,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     if (valid) {
         k.x = px;
         k.y = py;
-        k.z = fe_one();  // Always 1 in affine mode
         kangaroos[kid] = k;
     }
 }

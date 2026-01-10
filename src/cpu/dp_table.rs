@@ -30,21 +30,21 @@ impl DPTable {
     pub fn insert_and_check(&self, dp: GpuDistinguishedPoint) -> Option<Vec<u8>> {
         let dist_bytes = u32_array_to_bytes(&dp.dist);
 
-        // Convert Jacobian to affine X using k256
-        let affine_x = jacobian_to_affine_x(&dp.x, &dp.z)?;
+        // X is already in affine coordinates (no Z conversion needed)
+        let affine_x = u32_array_to_be_bytes(&dp.x);
 
         // Debug: log first few DPs (only with RUST_LOG=debug)
         let total = self.total_dps();
         if total < 20 {
             let ktype_str = if dp.ktype == 0 { "tame" } else { "wild" };
-            let z_is_one = dp.z == [1, 0, 0, 0, 0, 0, 0, 0];
             tracing::debug!(
-                "DP[{}] {}: x[0..2]=[{:08x},{:08x}] z_is_one={} dist[0..2]=[{:08x},{:08x}] affine_x[0..4]={}",
+                "DP[{}] {}: x[0..2]=[{:08x},{:08x}] dist[0..2]=[{:08x},{:08x}] affine_x[0..4]={}",
                 total,
                 ktype_str,
-                dp.x[0], dp.x[1],
-                z_is_one,
-                dp.dist[0], dp.dist[1],
+                dp.x[0],
+                dp.x[1],
+                dp.dist[0],
+                dp.dist[1],
                 hex::encode(&affine_x[..4])
             );
         }
@@ -143,40 +143,6 @@ impl DPTable {
         }
         (tame, wild)
     }
-}
-
-/// Convert Jacobian (X, Z) to affine X coordinate using k256
-fn jacobian_to_affine_x(x_jac: &[u32; 8], z_jac: &[u32; 8]) -> Option<[u8; 32]> {
-    use k256::FieldElement;
-
-    if z_jac.iter().all(|&v| v == 0) {
-        return None;
-    }
-
-    let x_bytes = u32_array_to_be_bytes(x_jac);
-    let z_bytes = u32_array_to_be_bytes(z_jac);
-
-    let x_fe = FieldElement::from_bytes(&x_bytes.into());
-    let z_fe = FieldElement::from_bytes(&z_bytes.into());
-
-    if x_fe.is_none().into() || z_fe.is_none().into() {
-        return None;
-    }
-
-    let x_fe = x_fe.unwrap();
-    let z_fe = z_fe.unwrap();
-
-    let z_inv = z_fe.invert();
-    if z_inv.is_none().into() {
-        return None;
-    }
-    let z_inv = z_inv.unwrap();
-    let z_inv_sq = z_inv.square();
-    let affine_x = x_fe * z_inv_sq;
-
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&affine_x.to_bytes());
-    Some(result)
 }
 
 fn u32_array_to_be_bytes(arr: &[u32; 8]) -> [u8; 32] {

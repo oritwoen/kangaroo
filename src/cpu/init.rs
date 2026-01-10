@@ -181,11 +181,10 @@ pub fn initialize_kangaroos(
             GpuKangaroo {
                 x: gpu_point.x,
                 y: gpu_point.y,
-                z: [1, 0, 0, 0, 0, 0, 0, 0], // Z = 1 (affine)
                 dist,
                 ktype: if is_tame { 0 } else { 1 },
                 is_active: 1,
-                _padding: [0; 2],
+                _padding: [0; 6],
             }
         })
         .collect();
