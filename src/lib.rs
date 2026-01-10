@@ -318,18 +318,24 @@ fn run_benchmark() -> anyhow::Result<()> {
     );
     println!("{}", "-".repeat(52));
 
+    let num_k = gpu_context.optimal_kangaroos();
+
     for case in BENCHMARK_CASES {
         let pubkey = crypto::parse_pubkey(case.pubkey)?;
         let start = crypto::parse_hex_u256(case.start)?;
 
-        let num_k = gpu_context.optimal_kangaroos();
         let dp_bits = (case.range_bits / 2)
             .saturating_sub((num_k as f64).log2() as u32 / 2)
             .clamp(8, 40);
 
-        let gpu_ctx = pollster::block_on(gpu_crypto::GpuContext::new(0))?;
-        let mut solver =
-            solver::KangarooSolver::new(gpu_ctx, pubkey, start, case.range_bits, dp_bits, num_k)?;
+        let mut solver = solver::KangarooSolver::new(
+            gpu_context.clone(),
+            pubkey,
+            start,
+            case.range_bits,
+            dp_bits,
+            num_k,
+        )?;
 
         let start_time = Instant::now();
         loop {
