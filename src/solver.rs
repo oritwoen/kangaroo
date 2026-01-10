@@ -46,7 +46,6 @@ pub struct KangarooSolver {
 }
 
 impl KangarooSolver {
-    /// Create a new solver with Jacobian coordinates (default)
     pub fn new(
         ctx: GpuContext,
         pubkey: Point,
@@ -55,16 +54,7 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        Self::new_internal(
-            ctx,
-            pubkey,
-            start,
-            range_bits,
-            dp_bits,
-            num_kangaroos,
-            false,
-            true,
-        )
+        Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
     }
 
     /// Create a new solver with affine coordinates (faster)
@@ -76,20 +66,10 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        Self::new_internal(
-            ctx,
-            pubkey,
-            start,
-            range_bits,
-            dp_bits,
-            num_kangaroos,
-            true,
-            true,
-        )
+        Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
     }
 
     #[allow(dead_code)]
-    /// Create a solver from shared context (for batch mode - minimal logging)
     pub fn new_with_context(
         ctx: &GpuContext,
         pubkey: Point,
@@ -98,7 +78,6 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        // Clone is cheap - wgpu Device/Queue are Arc-wrapped
         Self::new_internal(
             ctx.clone(),
             pubkey,
@@ -106,8 +85,7 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
-            false, // use_affine
-            false, // verbose
+            false,
         )
     }
 
@@ -231,17 +209,12 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
-        use_affine: bool,
         verbose: bool,
     ) -> Result<Self> {
         if verbose {
             info!("Creating pipeline...");
         }
-        let pipeline = if use_affine {
-            KangarooPipeline::new_affine(&ctx)?
-        } else {
-            KangarooPipeline::new(&ctx)?
-        };
+        let pipeline = KangarooPipeline::new(&ctx)?;
         if verbose {
             info!("Pipeline created");
         }

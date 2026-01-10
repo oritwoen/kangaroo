@@ -14,29 +14,12 @@ pub struct KangarooPipeline {
 }
 
 impl KangarooPipeline {
-    /// Create the compute pipeline with Jacobian coordinates (default)
     pub fn new(ctx: &GpuContext) -> Result<Self> {
-        Self::new_with_mode(ctx, false)
-    }
+        info!("Loading shader sources...");
 
-    /// Create the compute pipeline with affine coordinates (faster)
-    pub fn new_affine(ctx: &GpuContext) -> Result<Self> {
-        Self::new_with_mode(ctx, true)
-    }
-
-    /// Create the compute pipeline with specified coordinate mode
-    fn new_with_mode(ctx: &GpuContext, use_affine: bool) -> Result<Self> {
-        let mode_name = if use_affine { "affine" } else { "Jacobian" };
-        info!("Loading shader sources ({} mode)...", mode_name);
-
-        // Use shared shaders from internal gpu_crypto module
         let field = crate::gpu_crypto::shaders::FIELD_WGSL;
         let curve = crate::gpu_crypto::shaders::CURVE_JACOBIAN_WGSL;
-        let kangaroo = if use_affine {
-            include_str!("../shaders/kangaroo_affine.wgsl")
-        } else {
-            include_str!("../shaders/kangaroo_jacobian.wgsl")
-        };
+        let kangaroo = include_str!("../shaders/kangaroo_affine.wgsl");
 
         info!("Creating shader module...");
         let shader = ctx.create_shader_module("Kangaroo Shader", &[field, curve, kangaroo]);
