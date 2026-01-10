@@ -111,7 +111,7 @@ The Pollard's Kangaroo algorithm solves the discrete logarithm problem in O(√n
 
 Expected operations: ~2^(range_bits/2)
 
-Run `kangaroo --benchmark` to test your hardware. See [BENCHMARK.md](BENCHMARK.md) for results on various GPUs.
+Run `kangaroo --benchmark` to test your hardware. See [BENCHMARKS.md](BENCHMARKS.md) for results on various GPUs.
 
 ## Use Cases
 
