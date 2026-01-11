@@ -50,6 +50,7 @@ struct DistinguishedPoint {
 // We batch invert (x_jump - x_point) for all threads
 var<workgroup> shared_dx: array<array<u32, 8>, 64>;      // Delta X values
 var<workgroup> shared_prod: array<array<u32, 8>, 64>;    // Prefix products
+var<workgroup> shared_suffix: array<array<u32, 8>, 64>;
 
 // -----------------------------------------------------------------------------
 // Store distinguished point
@@ -154,43 +155,206 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         // =====================================================================
         
         // 1. Compute dx = x_jump - x_point and store in shared memory
-        //    If dx=0 (point equals jump point), use 1 to avoid division by zero.
-        //    This is astronomically unlikely (1/2^256) and would just skip one jump.
+        //    If dx=0 (point equals jump point), use 1 to avoid poisoning the batch,
+        //    but track it to skip the affine add later (astronomically unlikely: 1/2^256).
         var dx = fe_sub(jump_point.x, px);
-        if (fe_is_zero(dx)) {
+        var dx_was_zero = fe_is_zero(dx);
+        if (dx_was_zero) {
             dx = fe_one();
         }
         shared_dx[lid] = dx;
         workgroupBarrier();
 
-        // 2. Thread 0 computes prefix products and batch inverse
-        if (lid == 0u) {
-            var prod = fe_one();
-            
-            // Compute prefix products: shared_prod[i] = dx_0 * dx_1 * ... * dx_i
-            for (var i = 0u; i < 64u; i++) {
-                prod = fe_mul(prod, shared_dx[i]);
-                shared_prod[i] = prod;
-            }
-
-            // Invert total product
-            var inv = fe_inv(prod);
-
-            // Compute individual inverses backwards
-            // inv_dx[i] = inv_total * (dx_0 * ... * dx_{i-1}) * (dx_{i+1} * ... * dx_{n-1})
-            var inv_acc = inv;
-            for (var i = 63u; i > 0u; i--) {
-                let prev_prod = shared_prod[i - 1u];
-                let val_inv = fe_mul(inv_acc, prev_prod);
-                let val_dx = shared_dx[i];
-                
-                // Store result in shared_prod
-                shared_prod[i] = val_inv;
-                
-                inv_acc = fe_mul(inv_acc, val_dx);
-            }
-            shared_prod[0] = inv_acc;
+        // 2. FULL PARALLEL batch inversion using Blelloch exclusive scan
+        
+        // ===== PREFIX EXCLUSIVE SCAN =====
+        shared_prod[lid] = shared_dx[lid];
+        workgroupBarrier();
+        
+        // UP-SWEEP (reduce) - 6 steps
+        if ((lid & 1u) == 1u) {
+            shared_prod[lid] = fe_mul(shared_prod[lid - 1u], shared_prod[lid]);
         }
+        workgroupBarrier();
+        
+        if ((lid & 3u) == 3u) {
+            shared_prod[lid] = fe_mul(shared_prod[lid - 2u], shared_prod[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 7u) == 7u) {
+            shared_prod[lid] = fe_mul(shared_prod[lid - 4u], shared_prod[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 15u) == 15u) {
+            shared_prod[lid] = fe_mul(shared_prod[lid - 8u], shared_prod[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 31u) == 31u) {
+            shared_prod[lid] = fe_mul(shared_prod[lid - 16u], shared_prod[lid]);
+        }
+        workgroupBarrier();
+        
+        // Final up-sweep step: stride=32 (combines two 32-element subtrees)
+        // Only lane 63 is active: combines shared_prod[31] and shared_prod[63]
+        if (lid == 63u) {
+            shared_prod[63u] = fe_mul(shared_prod[31u], shared_prod[63u]);
+        }
+        workgroupBarrier();
+        
+        // Set root to identity before down-sweep
+        if (lid == 63u) {
+            shared_prod[63u] = fe_one();
+        }
+        workgroupBarrier();
+        
+        // DOWN-SWEEP - 6 steps (reverse order)
+        if (lid == 31u) {
+            let t = shared_prod[31u];
+            shared_prod[31u] = shared_prod[63u];
+            shared_prod[63u] = fe_mul(t, shared_prod[63u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 31u) == 15u) {
+            let t = shared_prod[lid];
+            shared_prod[lid] = shared_prod[lid + 16u];
+            shared_prod[lid + 16u] = fe_mul(t, shared_prod[lid + 16u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 15u) == 7u) {
+            let t = shared_prod[lid];
+            shared_prod[lid] = shared_prod[lid + 8u];
+            shared_prod[lid + 8u] = fe_mul(t, shared_prod[lid + 8u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 7u) == 3u) {
+            let t = shared_prod[lid];
+            shared_prod[lid] = shared_prod[lid + 4u];
+            shared_prod[lid + 4u] = fe_mul(t, shared_prod[lid + 4u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 3u) == 1u) {
+            let t = shared_prod[lid];
+            shared_prod[lid] = shared_prod[lid + 2u];
+            shared_prod[lid + 2u] = fe_mul(t, shared_prod[lid + 2u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 1u) == 0u) {
+            let t = shared_prod[lid];
+            shared_prod[lid] = shared_prod[lid + 1u];
+            shared_prod[lid + 1u] = fe_mul(t, shared_prod[lid + 1u]);
+        }
+        workgroupBarrier();
+        // Now: shared_prod[lid] = EXCLUSIVE prefix = dx[0]*...*dx[lid-1]
+        // shared_prod[0] = fe_one()
+        
+        // ===== SUFFIX EXCLUSIVE SCAN (on reversed array) =====
+        shared_suffix[lid] = shared_dx[63u - lid];
+        workgroupBarrier();
+        
+        // UP-SWEEP
+        if ((lid & 1u) == 1u) {
+            shared_suffix[lid] = fe_mul(shared_suffix[lid - 1u], shared_suffix[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 3u) == 3u) {
+            shared_suffix[lid] = fe_mul(shared_suffix[lid - 2u], shared_suffix[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 7u) == 7u) {
+            shared_suffix[lid] = fe_mul(shared_suffix[lid - 4u], shared_suffix[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 15u) == 15u) {
+            shared_suffix[lid] = fe_mul(shared_suffix[lid - 8u], shared_suffix[lid]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 31u) == 31u) {
+            shared_suffix[lid] = fe_mul(shared_suffix[lid - 16u], shared_suffix[lid]);
+        }
+        workgroupBarrier();
+        
+        if (lid == 63u) {
+            shared_suffix[63u] = fe_mul(shared_suffix[31u], shared_suffix[63u]);
+        }
+        workgroupBarrier();
+        
+        // Set root to identity before down-sweep
+        if (lid == 63u) {
+            shared_suffix[63u] = fe_one();
+        }
+        workgroupBarrier();
+        
+        // DOWN-SWEEP
+        if (lid == 31u) {
+            let t = shared_suffix[31u];
+            shared_suffix[31u] = shared_suffix[63u];
+            shared_suffix[63u] = fe_mul(t, shared_suffix[63u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 31u) == 15u) {
+            let t = shared_suffix[lid];
+            shared_suffix[lid] = shared_suffix[lid + 16u];
+            shared_suffix[lid + 16u] = fe_mul(t, shared_suffix[lid + 16u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 15u) == 7u) {
+            let t = shared_suffix[lid];
+            shared_suffix[lid] = shared_suffix[lid + 8u];
+            shared_suffix[lid + 8u] = fe_mul(t, shared_suffix[lid + 8u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 7u) == 3u) {
+            let t = shared_suffix[lid];
+            shared_suffix[lid] = shared_suffix[lid + 4u];
+            shared_suffix[lid + 4u] = fe_mul(t, shared_suffix[lid + 4u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 3u) == 1u) {
+            let t = shared_suffix[lid];
+            shared_suffix[lid] = shared_suffix[lid + 2u];
+            shared_suffix[lid + 2u] = fe_mul(t, shared_suffix[lid + 2u]);
+        }
+        workgroupBarrier();
+        
+        if ((lid & 1u) == 0u) {
+            let t = shared_suffix[lid];
+            shared_suffix[lid] = shared_suffix[lid + 1u];
+            shared_suffix[lid + 1u] = fe_mul(t, shared_suffix[lid + 1u]);
+        }
+        workgroupBarrier();
+        // Now: shared_suffix[lid] = exclusive scan of reversed array
+        // Map back: suffix_excl[i] = shared_suffix[63-i] = dx[i+1]*...*dx[63]
+        
+        // ===== FINAL COMPUTATION =====
+        // Compute inv_total and broadcast via shared_dx[0]
+        if (lid == 0u) {
+            // prefix_excl[63] = dx[0]*...*dx[62], so total = prefix_excl[63] * dx[63]
+            let total = fe_mul(shared_prod[63u], shared_dx[63u]);
+            shared_dx[0u] = fe_inv(total);
+        }
+        workgroupBarrier();
+        
+        let inv_total = shared_dx[0u];
+        let prefix_excl = shared_prod[lid];
+        let suffix_excl = shared_suffix[63u - lid];
+        
+        shared_prod[lid] = fe_mul(fe_mul(inv_total, prefix_excl), suffix_excl);
         workgroupBarrier();
 
         // 3. Read inverse dx from shared memory
@@ -212,12 +376,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             }
 
             // Perform affine addition: P = P + jump_point
-            let result = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
-            px = result.x;
-            py = result.y;
+            // Skip if dx was zero (point collision - astronomically unlikely)
+            if (!dx_was_zero) {
+                let result = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
+                px = result.x;
+                py = result.y;
 
-            // Update distance
-            k.dist = scalar_add_256(k.dist, jump_dist);
+                // Update distance
+                k.dist = scalar_add_256(k.dist, jump_dist);
+            }
         }
     }
 
