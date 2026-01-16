@@ -6,7 +6,7 @@
 mod fixtures;
 
 use fixtures::{get_smoke_test_puzzle, get_test_puzzles, PuzzleTestCase};
-use kangaroo::{full_verify, parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver};
+use kangaroo::{full_verify, parse_hex_u256, parse_pubkey, verify_key, GpuBackend, GpuContext, KangarooSolver};
 use std::time::{Duration, Instant};
 
 /// Test configuration
@@ -24,7 +24,7 @@ enum SolveResult {
 
 /// Initialize GPU context with CPU fallback
 fn init_context() -> Result<GpuContext, String> {
-    match pollster::block_on(GpuContext::new(0)) {
+    match pollster::block_on(GpuContext::new(0, GpuBackend::Auto)) {
         Ok(ctx) => {
             let name = ctx.device_name().to_string();
             if name.contains("llvmpipe") || name.contains("SwiftShader") || name.contains("CPU") {
@@ -57,7 +57,7 @@ fn init_context() -> Result<GpuContext, String> {
 /// Try to create a software-rendered context
 async fn try_software_context() -> Result<GpuContext, anyhow::Error> {
     // This will use whatever backend is available, including software
-    GpuContext::new(0).await
+    GpuContext::new(0, GpuBackend::Auto).await
 }
 
 /// Solve a puzzle with timeout and retries
@@ -101,7 +101,7 @@ fn try_solve_once(puzzle: &PuzzleTestCase, _ctx: &GpuContext) -> SolveResult {
     // Since GpuContext doesn't implement Clone, we need to create a new one
     // For now, we'll work around this by creating the solver directly
     let solver_result = pollster::block_on(async {
-        match GpuContext::new(0).await {
+        match GpuContext::new(0, GpuBackend::Auto).await {
             Ok(new_ctx) => KangarooSolver::new(
                 new_ctx,
                 pubkey,

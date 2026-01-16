@@ -1,4 +1,4 @@
-use kangaroo::{parse_hex_u256, parse_pubkey, verify_key, GpuContext, KangarooSolver};
+use kangaroo::{parse_hex_u256, parse_pubkey, verify_key, GpuBackend, GpuContext, KangarooSolver};
 use tracing_subscriber::{fmt, EnvFilter};
 
 fn main() -> anyhow::Result<()> {
@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     let dp_bits = 8;
 
     println!("Initializing context...");
-    let ctx = pollster::block_on(GpuContext::new(0))?;
+    let ctx = pollster::block_on(GpuContext::new(0, GpuBackend::Auto))?;
 
     println!("Creating solver...");
     let mut solver = KangarooSolver::new(

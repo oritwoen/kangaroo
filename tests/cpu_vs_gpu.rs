@@ -3,7 +3,8 @@
 //! Run with: cargo test --release cpu_vs_gpu -- --nocapture --ignored
 
 use kangaroo::{
-    parse_hex_u256, parse_pubkey, verify_key, CpuKangarooSolver, GpuContext, KangarooSolver,
+    parse_hex_u256, parse_pubkey, verify_key, CpuKangarooSolver, GpuBackend, GpuContext,
+    KangarooSolver,
 };
 use std::time::{Duration, Instant};
 
@@ -73,7 +74,7 @@ fn cpu_vs_gpu_benchmark() {
         let range_bits = *puzzle_num as u32;
         let dp_bits = (range_bits / 2).saturating_sub(2).clamp(8, 20);
 
-        let ctx = pollster::block_on(GpuContext::new(0)).expect("GPU context");
+        let ctx = pollster::block_on(GpuContext::new(0, GpuBackend::Auto)).expect("GPU context");
         let mut solver = KangarooSolver::new(ctx, pubkey.clone(), start, range_bits, dp_bits, 4096)
             .expect("solver");
 

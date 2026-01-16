@@ -17,7 +17,7 @@ mod solver;
 
 pub use cpu::CpuKangarooSolver;
 pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, Point};
-pub use gpu_crypto::GpuContext;
+pub use gpu_crypto::{GpuBackend, GpuContext};
 pub use solver::KangarooSolver;
 
 use anyhow::anyhow;
@@ -66,6 +66,10 @@ pub struct Args {
     /// GPU device index
     #[arg(long, default_value = "0")]
     gpu: u32,
+
+    /// GPU backend to use
+    #[arg(long, value_enum, default_value = "auto")]
+    backend: gpu_crypto::GpuBackend,
 
     /// Output file for result (hex private key)
     #[arg(short, long)]
@@ -348,11 +352,11 @@ const BENCHMARK_CASES: &[BenchmarkCase] = &[
     },
 ];
 
-fn run_benchmark(gpu_index: u32) -> anyhow::Result<()> {
+fn run_benchmark(gpu_index: u32, backend: gpu_crypto::GpuBackend) -> anyhow::Result<()> {
     println!("Kangaroo Benchmark Suite");
     println!("========================\n");
 
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index))?;
+    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, backend))?;
     println!("GPU: {}", gpu_context.device_name());
     println!("Compute units: {}\n", gpu_context.compute_units());
 
@@ -413,7 +417,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     if args.benchmark {
-        return run_benchmark(args.gpu);
+        return run_benchmark(args.gpu, args.backend);
     }
 
     let params = resolve_params(&args)?;
@@ -514,7 +518,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(args.gpu))?;
+    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(args.gpu, args.backend))?;
     let device_name = gpu_context.device_name().to_string();
     if !args.quiet && !args.json {
         info!("GPU: {}", device_name);
