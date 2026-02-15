@@ -325,8 +325,6 @@ fn print_providers_list() {
     }
 }
 
-
-
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
