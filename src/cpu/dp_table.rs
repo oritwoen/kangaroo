@@ -3,6 +3,8 @@
 use crate::gpu::GpuDistinguishedPoint;
 use std::collections::HashMap;
 
+const MAX_DISTINGUISHED_POINTS: usize = 65_536;
+
 /// Stored DP with full affine X for proper verification
 #[derive(Clone)]
 struct StoredDP {
@@ -14,6 +16,7 @@ struct StoredDP {
 pub struct DPTable {
     table: HashMap<u64, Vec<StoredDP>>,
     start: [u8; 32], // search range start for key computation
+    total_dps: usize,
 }
 
 impl DPTable {
@@ -21,6 +24,7 @@ impl DPTable {
         Self {
             table: HashMap::new(),
             start,
+            total_dps: 0,
         }
     }
 
@@ -94,12 +98,19 @@ impl DPTable {
                 return Some(key);
             }
             // No collision, add to list
+            if self.total_dps >= MAX_DISTINGUISHED_POINTS {
+                return None;
+            }
             existing_list.push(StoredDP {
                 affine_x,
                 dist: dist_bytes.to_vec(),
                 ktype: dp.ktype,
             });
+            self.total_dps += 1;
         } else {
+            if self.total_dps >= MAX_DISTINGUISHED_POINTS {
+                return None;
+            }
             // New hash key
             self.table.insert(
                 hash_key,
@@ -109,6 +120,7 @@ impl DPTable {
                     ktype: dp.ktype,
                 }],
             );
+            self.total_dps += 1;
         }
 
         None
@@ -125,7 +137,7 @@ impl DPTable {
     }
 
     pub fn total_dps(&self) -> usize {
-        self.table.values().map(|list| list.len()).sum()
+        self.total_dps
     }
 
     pub fn count_by_type(&self) -> (usize, usize) {
@@ -213,5 +225,44 @@ fn subtract_256(a: &[u8], b: &[u8], result: &mut [u8]) {
             result[i] = diff as u8;
             borrow = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DPTable;
+    use super::MAX_DISTINGUISHED_POINTS;
+    use crate::gpu::GpuDistinguishedPoint;
+
+    fn make_dp(x: u32, dist: u32, ktype: u32) -> GpuDistinguishedPoint {
+        let mut x_words = [0u32; 8];
+        x_words[7] = x;
+
+        let mut dist_words = [0u32; 8];
+        dist_words[0] = dist;
+
+        GpuDistinguishedPoint {
+            x: x_words,
+            dist: dist_words,
+            ktype,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        }
+    }
+
+    #[test]
+    fn insert_and_check_caps_at_maximum() {
+        let mut table = DPTable::new([0u8; 32]);
+
+        for i in 0..MAX_DISTINGUISHED_POINTS {
+            let dp = make_dp(i as u32, i as u32, 0);
+            assert!(table.insert_and_check(dp).is_none());
+        }
+
+        assert_eq!(table.total_dps(), MAX_DISTINGUISHED_POINTS);
+
+        let overflow_dp = make_dp(u32::MAX, u32::MAX, 1);
+        assert!(table.insert_and_check(overflow_dp).is_none());
+        assert_eq!(table.total_dps(), MAX_DISTINGUISHED_POINTS);
     }
 }
