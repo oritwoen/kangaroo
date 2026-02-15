@@ -1,4 +1,7 @@
 //! GPU buffer management
+//!
+//! Uses double-buffered DP slots so the CPU can read back results from
+//! the previous dispatch while the GPU is already executing the next one.
 
 use super::{
     GpuAffinePoint, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, KangarooPipeline,
@@ -6,7 +9,18 @@ use super::{
 use anyhow::Result;
 use wgpu::{BindGroup, Buffer, BufferUsages};
 
-/// GPU buffer collection
+/// Number of DP buffer slots for double buffering
+const NUM_SLOTS: usize = 2;
+
+/// One slot of DP-related buffers (dp_buffer + dp_count + staging + bind_group)
+struct DpSlot {
+    dp_buffer: Buffer,
+    dp_count_buffer: Buffer,
+    staging_buffer: Buffer,
+    bind_group: BindGroup,
+}
+
+/// GPU buffer collection with double-buffered DP slots
 pub struct GpuBuffers {
     pub config_buffer: Buffer,
     #[allow(dead_code)]
@@ -14,14 +28,11 @@ pub struct GpuBuffers {
     #[allow(dead_code)]
     jump_distances_buffer: Buffer,
     pub kangaroos_buffer: Buffer,
-    pub dp_buffer: Buffer,
-    pub dp_count_buffer: Buffer,
-    pub staging_buffer: Buffer,
-    pub bind_group: BindGroup,
+    slots: [DpSlot; NUM_SLOTS],
 }
 
 impl GpuBuffers {
-    /// Create GPU buffers
+    /// Create GPU buffers with double-buffered DP slots
     pub fn new(
         ctx: &GpuContext,
         pipeline: &KangarooPipeline,
@@ -49,69 +60,78 @@ impl GpuBuffers {
             jump_distances,
         );
 
-        // Kangaroos buffer
         let kangaroos_buffer = ctx.create_buffer::<GpuKangaroo>(
             "Kangaroos Buffer",
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             num_kangaroos as u64,
         );
 
-        // DP buffer
-        let dp_buffer = ctx.create_buffer::<GpuDistinguishedPoint>(
-            "DP Buffer",
-            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            max_dps as u64,
-        );
-
-        // DP count buffer (atomic u32)
-        let dp_count_buffer = ctx.create_buffer_init(
-            "DP Count Buffer",
-            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            &[0u32],
-        );
-
-        // Staging buffer for readback
-        // Must be large enough to hold either kangaroos (for normalization) or DPs
         let kangaroos_size = (num_kangaroos as usize) * std::mem::size_of::<GpuKangaroo>();
         let dp_size = (max_dps as usize) * std::mem::size_of::<GpuDistinguishedPoint>();
         let staging_size = std::cmp::max(kangaroos_size, dp_size) as u64 + 4;
 
-        let staging_buffer = ctx.create_buffer::<u8>(
-            "Staging Buffer",
-            BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            staging_size,
-        );
+        let slots = std::array::from_fn(|i| {
+            let label_suffix = if i == 0 { "A" } else { "B" };
 
-        // Create bind group
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Kangaroo Bind Group"),
-            layout: &pipeline.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: jump_points_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: jump_distances_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: kangaroos_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: dp_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: dp_count_buffer.as_entire_binding(),
-                },
-            ],
+            let dp_buffer = ctx.create_buffer::<GpuDistinguishedPoint>(
+                &format!("DP Buffer {label_suffix}"),
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                max_dps as u64,
+            );
+
+            let dp_count_buffer = ctx.create_buffer_init(
+                &format!("DP Count Buffer {label_suffix}"),
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                &[0u32],
+            );
+
+            let staging_buffer = ctx.create_buffer::<u8>(
+                &format!("Staging Buffer {label_suffix}"),
+                BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+                staging_size,
+            );
+
+            let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(if i == 0 {
+                    "Kangaroo Bind Group A"
+                } else {
+                    "Kangaroo Bind Group B"
+                }),
+                layout: &pipeline.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: config_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: jump_points_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: jump_distances_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: kangaroos_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: dp_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: dp_count_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+            DpSlot {
+                dp_buffer,
+                dp_count_buffer,
+                staging_buffer,
+                bind_group,
+            }
         });
 
         Ok(Self {
@@ -119,10 +139,27 @@ impl GpuBuffers {
             jump_points_buffer,
             jump_distances_buffer,
             kangaroos_buffer,
-            dp_buffer,
-            dp_count_buffer,
-            staging_buffer,
-            bind_group,
+            slots,
         })
+    }
+
+    /// Get the bind group for a given slot
+    pub fn bind_group(&self, slot: usize) -> &BindGroup {
+        &self.slots[slot].bind_group
+    }
+
+    /// Get the DP buffer for a given slot
+    pub fn dp_buffer(&self, slot: usize) -> &Buffer {
+        &self.slots[slot].dp_buffer
+    }
+
+    /// Get the DP count buffer for a given slot
+    pub fn dp_count_buffer(&self, slot: usize) -> &Buffer {
+        &self.slots[slot].dp_count_buffer
+    }
+
+    /// Get the staging buffer for a given slot
+    pub fn staging_buffer(&self, slot: usize) -> &Buffer {
+        &self.slots[slot].staging_buffer
     }
 }
