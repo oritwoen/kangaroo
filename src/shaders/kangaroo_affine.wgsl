@@ -46,11 +46,10 @@ struct DistinguishedPoint {
 @group(0) @binding(4) var<storage, read_write> dp_buffer: array<DistinguishedPoint>;
 @group(0) @binding(5) var<storage, read_write> dp_count: atomic<u32>;
 
-// Shared memory for batch inversion (Montgomery's trick)
-// We batch invert (x_jump - x_point) for all threads
-var<workgroup> shared_dx: array<array<u32, 8>, 64>;      // Delta X values
-var<workgroup> shared_prod: array<array<u32, 8>, 64>;    // Prefix products
-var<workgroup> shared_suffix: array<array<u32, 8>, 64>;
+// Shared memory for batch inversion (tree-based Montgomery's trick)
+// Product tree + saved right-child products for inverse propagation
+var<workgroup> shared_prod: array<array<u32, 8>, 64>;    // Product tree / individual inverses
+var<workgroup> shared_save: array<array<u32, 8>, 64>;    // Saved right-child products (63 entries used)
 
 // -----------------------------------------------------------------------------
 // Store distinguished point
@@ -173,202 +172,131 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         if (dx_was_zero) {
             dx = fe_one();
         }
-        shared_dx[lid] = dx;
+        shared_prod[lid] = dx;
         workgroupBarrier();
 
-        // 2. FULL PARALLEL batch inversion using Blelloch exclusive scan
-        
-        // ===== PREFIX EXCLUSIVE SCAN =====
-        shared_prod[lid] = shared_dx[lid];
-        workgroupBarrier();
-        
-        // UP-SWEEP (reduce) - 6 steps
+        // 2. Tree-based batch inversion (Montgomery's trick with parallel tree)
+        //    Up-sweep builds product tree while saving right children.
+        //    Single fe_inv of root, then down-sweep propagates individual inverses.
+        //    Eliminates suffix scan: ~14 barriers vs ~30, ~18 fe_mul rounds vs ~26.
+
+        // ===== UP-SWEEP: build product tree, save right children =====
+        // Layout of shared_save: [0..31]=level0, [32..47]=level1, [48..55]=level2,
+        //                        [56..59]=level3, [60..61]=level4, [62]=level5
+
+        // Level 0 (stride 1): 32 threads merge pairs
         if ((lid & 1u) == 1u) {
+            shared_save[lid >> 1u] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 1u], shared_prod[lid]);
         }
         workgroupBarrier();
-        
+
+        // Level 1 (stride 2): 16 threads merge quads
         if ((lid & 3u) == 3u) {
+            shared_save[32u + (lid >> 2u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 2u], shared_prod[lid]);
         }
         workgroupBarrier();
-        
+
+        // Level 2 (stride 4): 8 threads merge octets
         if ((lid & 7u) == 7u) {
+            shared_save[48u + (lid >> 3u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 4u], shared_prod[lid]);
         }
         workgroupBarrier();
-        
+
+        // Level 3 (stride 8): 4 threads merge 16-element groups
         if ((lid & 15u) == 15u) {
+            shared_save[56u + (lid >> 4u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 8u], shared_prod[lid]);
         }
         workgroupBarrier();
-        
+
+        // Level 4 (stride 16): 2 threads merge 32-element halves
         if ((lid & 31u) == 31u) {
+            shared_save[60u + (lid >> 5u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 16u], shared_prod[lid]);
         }
         workgroupBarrier();
-        
-        // Final up-sweep step: stride=32 (combines two 32-element subtrees)
-        // Only lane 63 is active: combines shared_prod[31] and shared_prod[63]
+
+        // Level 5 (stride 32): 1 thread merges full 64-element product
         if (lid == 63u) {
+            shared_save[62u] = shared_prod[63u];
             shared_prod[63u] = fe_mul(shared_prod[31u], shared_prod[63u]);
         }
         workgroupBarrier();
-        
-        // Set root to identity before down-sweep
-        if (lid == 63u) {
-            shared_prod[63u] = fe_one();
-        }
-        workgroupBarrier();
-        
-        // DOWN-SWEEP - 6 steps (reverse order)
-        if (lid == 31u) {
-            let t = shared_prod[31u];
-            shared_prod[31u] = shared_prod[63u];
-            shared_prod[63u] = fe_mul(t, shared_prod[63u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 31u) == 15u) {
-            let t = shared_prod[lid];
-            shared_prod[lid] = shared_prod[lid + 16u];
-            shared_prod[lid + 16u] = fe_mul(t, shared_prod[lid + 16u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 15u) == 7u) {
-            let t = shared_prod[lid];
-            shared_prod[lid] = shared_prod[lid + 8u];
-            shared_prod[lid + 8u] = fe_mul(t, shared_prod[lid + 8u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 7u) == 3u) {
-            let t = shared_prod[lid];
-            shared_prod[lid] = shared_prod[lid + 4u];
-            shared_prod[lid + 4u] = fe_mul(t, shared_prod[lid + 4u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 3u) == 1u) {
-            let t = shared_prod[lid];
-            shared_prod[lid] = shared_prod[lid + 2u];
-            shared_prod[lid + 2u] = fe_mul(t, shared_prod[lid + 2u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 1u) == 0u) {
-            let t = shared_prod[lid];
-            shared_prod[lid] = shared_prod[lid + 1u];
-            shared_prod[lid + 1u] = fe_mul(t, shared_prod[lid + 1u]);
-        }
-        workgroupBarrier();
-        // Now: shared_prod[lid] = EXCLUSIVE prefix = dx[0]*...*dx[lid-1]
-        // shared_prod[0] = fe_one()
-        
-        // ===== SUFFIX EXCLUSIVE SCAN (on reversed array) =====
-        shared_suffix[lid] = shared_dx[63u - lid];
-        workgroupBarrier();
-        
-        // UP-SWEEP
-        if ((lid & 1u) == 1u) {
-            shared_suffix[lid] = fe_mul(shared_suffix[lid - 1u], shared_suffix[lid]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 3u) == 3u) {
-            shared_suffix[lid] = fe_mul(shared_suffix[lid - 2u], shared_suffix[lid]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 7u) == 7u) {
-            shared_suffix[lid] = fe_mul(shared_suffix[lid - 4u], shared_suffix[lid]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 15u) == 15u) {
-            shared_suffix[lid] = fe_mul(shared_suffix[lid - 8u], shared_suffix[lid]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 31u) == 31u) {
-            shared_suffix[lid] = fe_mul(shared_suffix[lid - 16u], shared_suffix[lid]);
-        }
-        workgroupBarrier();
-        
-        if (lid == 63u) {
-            shared_suffix[63u] = fe_mul(shared_suffix[31u], shared_suffix[63u]);
-        }
-        workgroupBarrier();
-        
-        // Set root to identity before down-sweep
-        if (lid == 63u) {
-            shared_suffix[63u] = fe_one();
-        }
-        workgroupBarrier();
-        
-        // DOWN-SWEEP
-        if (lid == 31u) {
-            let t = shared_suffix[31u];
-            shared_suffix[31u] = shared_suffix[63u];
-            shared_suffix[63u] = fe_mul(t, shared_suffix[63u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 31u) == 15u) {
-            let t = shared_suffix[lid];
-            shared_suffix[lid] = shared_suffix[lid + 16u];
-            shared_suffix[lid + 16u] = fe_mul(t, shared_suffix[lid + 16u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 15u) == 7u) {
-            let t = shared_suffix[lid];
-            shared_suffix[lid] = shared_suffix[lid + 8u];
-            shared_suffix[lid + 8u] = fe_mul(t, shared_suffix[lid + 8u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 7u) == 3u) {
-            let t = shared_suffix[lid];
-            shared_suffix[lid] = shared_suffix[lid + 4u];
-            shared_suffix[lid + 4u] = fe_mul(t, shared_suffix[lid + 4u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 3u) == 1u) {
-            let t = shared_suffix[lid];
-            shared_suffix[lid] = shared_suffix[lid + 2u];
-            shared_suffix[lid + 2u] = fe_mul(t, shared_suffix[lid + 2u]);
-        }
-        workgroupBarrier();
-        
-        if ((lid & 1u) == 0u) {
-            let t = shared_suffix[lid];
-            shared_suffix[lid] = shared_suffix[lid + 1u];
-            shared_suffix[lid + 1u] = fe_mul(t, shared_suffix[lid + 1u]);
-        }
-        workgroupBarrier();
-        // Now: shared_suffix[lid] = exclusive scan of reversed array
-        // Map back: suffix_excl[i] = shared_suffix[63-i] = dx[i+1]*...*dx[63]
-        
-        // ===== FINAL COMPUTATION =====
-        // Compute inv_total and broadcast via shared_dx[0]
+
+        // ===== INVERT root (total product of all dx values) =====
         if (lid == 0u) {
-            // prefix_excl[63] = dx[0]*...*dx[62], so total = prefix_excl[63] * dx[63]
-            let total = fe_mul(shared_prod[63u], shared_dx[63u]);
-            shared_dx[0u] = fe_inv(total);
+            shared_prod[63u] = fe_inv(shared_prod[63u]);
         }
-        workgroupBarrier();
-        
-        let inv_total = shared_dx[0u];
-        let prefix_excl = shared_prod[lid];
-        let suffix_excl = shared_suffix[63u - lid];
-        
-        shared_prod[lid] = fe_mul(fe_mul(inv_total, prefix_excl), suffix_excl);
         workgroupBarrier();
 
-        // 3. Read inverse dx from shared memory
+        // ===== DOWN-SWEEP: propagate inverses through tree =====
+        // At each node: inv(left) = inv(parent) * right_saved
+        //               inv(right) = inv(parent) * left_preserved
+
+        // Level 5 (stride 32): 1 thread splits root inverse
+        if (lid == 63u) {
+            let inv_p = shared_prod[63u];
+            let left = shared_prod[31u];
+            let right = shared_save[62u];
+            shared_prod[31u] = fe_mul(inv_p, right);
+            shared_prod[63u] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Level 4 (stride 16): 2 threads
+        if ((lid & 31u) == 31u) {
+            let inv_p = shared_prod[lid];
+            let left = shared_prod[lid - 16u];
+            let right = shared_save[60u + (lid >> 5u)];
+            shared_prod[lid - 16u] = fe_mul(inv_p, right);
+            shared_prod[lid] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Level 3 (stride 8): 4 threads
+        if ((lid & 15u) == 15u) {
+            let inv_p = shared_prod[lid];
+            let left = shared_prod[lid - 8u];
+            let right = shared_save[56u + (lid >> 4u)];
+            shared_prod[lid - 8u] = fe_mul(inv_p, right);
+            shared_prod[lid] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Level 2 (stride 4): 8 threads
+        if ((lid & 7u) == 7u) {
+            let inv_p = shared_prod[lid];
+            let left = shared_prod[lid - 4u];
+            let right = shared_save[48u + (lid >> 3u)];
+            shared_prod[lid - 4u] = fe_mul(inv_p, right);
+            shared_prod[lid] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Level 1 (stride 2): 16 threads
+        if ((lid & 3u) == 3u) {
+            let inv_p = shared_prod[lid];
+            let left = shared_prod[lid - 2u];
+            let right = shared_save[32u + (lid >> 2u)];
+            shared_prod[lid - 2u] = fe_mul(inv_p, right);
+            shared_prod[lid] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Level 0 (stride 1): 32 threads produce individual inverses
+        if ((lid & 1u) == 1u) {
+            let inv_p = shared_prod[lid];
+            let left = shared_prod[lid - 1u];
+            let right = shared_save[lid >> 1u];
+            shared_prod[lid - 1u] = fe_mul(inv_p, right);
+            shared_prod[lid] = fe_mul(inv_p, left);
+        }
+        workgroupBarrier();
+
+        // Now: shared_prod[lid] = 1/dx[lid] for all threads
         let dx_inv = shared_prod[lid];
 
         // =====================================================================
