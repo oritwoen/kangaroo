@@ -1,3 +1,26 @@
+## [0.6.0] - 2026-02-15
+
+### Features
+
+- *(benchmark)* Auto-save results to BENCHMARKS.md (#34)
+
+### Bug Fixes
+
+- Full DP mask in WGSL (#28)
+
+### Refactor
+
+- *(gpu)* Replace Blelloch scan with tree-based batch inversion (#31)
+- *(gpu)* Double-buffer DP slots and merge copy encoder (#33)
+
+### Documentation
+
+- *(benchmarks)* Add RTX 5060 results (#26)
+
+### Performance
+
+- *(gpu)* Optimize fe_square (#30)
+- *(gpu)* Optimize fe_inv with addition chain — 2x speedup (#32)
 ## [0.5.0] - 2026-01-16
 
 ### Features
@@ -12,6 +35,10 @@
 
 - Update benchmarks for v0.4.0 with performance history
 - Add badges and community section
+
+### Miscellaneous Tasks
+
+- *(release)* V0.5.0
 ## [0.4.0] - 2026-01-11
 
 ### Bug Fixes
