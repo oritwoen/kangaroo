@@ -43,6 +43,7 @@ pub struct KangarooSolver {
     num_kangaroos: u32,
     #[allow(dead_code)]
     steps_per_call: u32,
+    current_slot: usize,
 }
 
 impl KangarooSolver {
@@ -187,6 +188,7 @@ impl KangarooSolver {
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
+            current_slot: 0,
         })
     }
 
@@ -274,6 +276,7 @@ impl KangarooSolver {
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
+            current_slot: 0,
         };
 
         // Auto-calibrate steps_per_call
@@ -294,15 +297,19 @@ impl KangarooSolver {
             bytemuck::bytes_of(&final_config),
         );
 
-        // Reset DP count after calibration warmup
-        solver.reset_dp_count()?;
+        solver.reset_dp_count(0)?;
+        solver.reset_dp_count(1)?;
 
         Ok(solver)
     }
 
-    /// Run one batch of GPU operations
+    /// Run one batch of GPU operations.
+    ///
+    /// Uses double-buffered DP slots: compute + copy to staging happen in a
+    /// single encoder, eliminating the conditional second round-trip.
     pub fn step(&mut self) -> Result<Option<Vec<u8>>> {
-        // Create command encoder
+        let slot = self.current_slot;
+
         let mut encoder = self
             .ctx
             .device
@@ -310,36 +317,41 @@ impl KangarooSolver {
                 label: Some("Kangaroo Encoder"),
             });
 
-        // Dispatch compute
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Kangaroo Pass"),
                 timestamp_writes: None,
             });
-
             pass.set_pipeline(&self.pipeline.pipeline);
-            pass.set_bind_group(0, &self.buffers.bind_group, &[]);
-
-            let workgroups = self.num_kangaroos.div_ceil(64); // Workgroup size is 64
+            pass.set_bind_group(0, self.buffers.bind_group(slot), &[]);
+            let workgroups = self.num_kangaroos.div_ceil(64);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        // Copy DP count for readback (first 4 bytes of staging)
+        // Copy dp_count AND full dp_buffer to staging in the same encoder.
+        // This eliminates the conditional second round-trip — we always copy
+        // both, and only parse dp_buffer on CPU if dp_count > 0.
         encoder.copy_buffer_to_buffer(
-            &self.buffers.dp_count_buffer,
+            self.buffers.dp_count_buffer(slot),
             0,
-            &self.buffers.staging_buffer,
+            self.buffers.staging_buffer(slot),
             0,
             4,
         );
+        let dp_copy_size = (MAX_DISTINGUISHED_POINTS as u64)
+            * (std::mem::size_of::<GpuDistinguishedPoint>() as u64);
+        encoder.copy_buffer_to_buffer(
+            self.buffers.dp_buffer(slot),
+            0,
+            self.buffers.staging_buffer(slot),
+            4,
+            dp_copy_size,
+        );
 
-        // Submit
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        // Update operation count
         self.total_ops += (self.num_kangaroos as u64) * (self.steps_per_call as u64);
 
-        // Log progress every 10M ops (less verbose)
         if self.total_ops % 10_000_000 < (self.num_kangaroos as u64 * self.steps_per_call as u64) {
             let (tame, wild) = self.dp_table.count_by_type();
             tracing::info!(
@@ -351,50 +363,19 @@ impl KangarooSolver {
             );
         }
 
-        // Read back DP count and process if any found
-        // TODO: Optimization: Use double buffering for async readback.
-        // Currently we block here waiting for GPU to finish execution and transfer data.
-        // With double buffering, we could dispatch the next batch while waiting for
-        // the previous one, keeping GPU fully occupied.
-        // Needs:
-        // 1. Two sets of buffers (or at least staging buffers)
-        // 2. State machine to manage "Dispatch A -> Read B -> Dispatch B -> Read A"
-        let dp_count = self.read_dp_count()?;
+        let dp_count = self.read_dp_count(slot)?;
         if dp_count > 0 {
-            // Copy DP buffer for readback
-            let mut encoder2 =
-                self.ctx
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("DP Readback"),
-                    });
-
-            let dp_size = std::mem::size_of::<GpuDistinguishedPoint>();
-            let max_dps = MAX_DISTINGUISHED_POINTS as usize;
-            let actual_count = (dp_count as usize).min(max_dps);
-            let copy_size = (actual_count * dp_size) as u64;
-
-            encoder2.copy_buffer_to_buffer(
-                &self.buffers.dp_buffer,
-                0,
-                &self.buffers.staging_buffer,
-                4,
-                copy_size,
-            );
-
-            self.ctx.queue.submit(Some(encoder2.finish()));
-
-            // Read back DPs and check for collision
-            let dps = self.read_dps(actual_count as u32)?;
+            let actual_count = (dp_count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
+            let dps = self.read_dps(slot, actual_count as u32)?;
             for dp in dps {
                 if let Some(key) = self.dp_table.insert_and_check(dp) {
                     return Ok(Some(key));
                 }
             }
-
-            self.reset_dp_count()?;
+            self.reset_dp_count(slot)?;
         }
 
+        self.current_slot = 1 - slot;
         Ok(None)
     }
 
@@ -403,8 +384,9 @@ impl KangarooSolver {
         self.total_ops
     }
 
-    fn read_dp_count(&self) -> Result<u32> {
-        let slice = self.buffers.staging_buffer.slice(0..4);
+    fn read_dp_count(&self, slot: usize) -> Result<u32> {
+        let staging = self.buffers.staging_buffer(slot);
+        let slice = staging.slice(0..4);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
@@ -419,16 +401,17 @@ impl KangarooSolver {
         let data = slice.get_mapped_range();
         let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         drop(data);
-        self.buffers.staging_buffer.unmap();
+        staging.unmap();
 
         Ok(count)
     }
 
-    fn read_dps(&self, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
+    fn read_dps(&self, slot: usize, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
         let dp_size = std::mem::size_of::<GpuDistinguishedPoint>();
         let total_size = 4 + (count as usize * dp_size);
 
-        let slice = self.buffers.staging_buffer.slice(0..total_size as u64);
+        let staging = self.buffers.staging_buffer(slot);
+        let slice = staging.slice(0..total_size as u64);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
@@ -441,8 +424,6 @@ impl KangarooSolver {
         rx.recv()??;
 
         let data = slice.get_mapped_range();
-
-        // Skip first 4 bytes (count), read DPs
         let dp_bytes = &data[4..];
         let dps: Vec<GpuDistinguishedPoint> = dp_bytes
             .chunks_exact(dp_size)
@@ -451,15 +432,15 @@ impl KangarooSolver {
             .collect();
 
         drop(data);
-        self.buffers.staging_buffer.unmap();
+        staging.unmap();
 
         Ok(dps)
     }
 
-    fn reset_dp_count(&self) -> Result<()> {
+    fn reset_dp_count(&self, slot: usize) -> Result<()> {
         self.ctx
             .queue
-            .write_buffer(&self.buffers.dp_count_buffer, 0, &[0u8; 4]);
+            .write_buffer(self.buffers.dp_count_buffer(slot), 0, &[0u8; 4]);
         Ok(())
     }
 
@@ -543,7 +524,7 @@ impl KangarooSolver {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline.pipeline);
-            pass.set_bind_group(0, &self.buffers.bind_group, &[]);
+            pass.set_bind_group(0, self.buffers.bind_group(0), &[]);
             let workgroups = self.num_kangaroos.div_ceil(64);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
