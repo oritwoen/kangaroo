@@ -108,6 +108,17 @@ fn affine_add_with_inv(
     return result;
 }
 
+fn is_distinguished(px: array<u32, 8>) -> bool {
+    return ((px[0] & config.dp_mask_lo.x) == 0u)
+        && ((px[1] & config.dp_mask_lo.y) == 0u)
+        && ((px[2] & config.dp_mask_lo.z) == 0u)
+        && ((px[3] & config.dp_mask_lo.w) == 0u)
+        && ((px[4] & config.dp_mask_hi.x) == 0u)
+        && ((px[5] & config.dp_mask_hi.y) == 0u)
+        && ((px[6] & config.dp_mask_hi.z) == 0u)
+        && ((px[7] & config.dp_mask_hi.w) == 0u);
+}
+
 // -----------------------------------------------------------------------------
 // Main compute shader
 // -----------------------------------------------------------------------------
@@ -367,7 +378,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         if (valid) {
             // Check for DP before the jump (on current position)
             if (!dp_stored) {
-                if ((px[0] & config.dp_mask_lo.x) == 0u) {
+                if (is_distinguished(px)) {
                     k.x = px;
                     k.y = py;
                     store_dp(k, kid);
