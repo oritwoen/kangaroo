@@ -508,6 +508,14 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
     if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
     if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
+    if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
+    if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
+    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
+    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
+    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
+    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[1]²
     t = mul32(a[1], a[1]);
@@ -519,6 +527,12 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
     if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
     if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
+    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
+    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
+    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
+    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[2]²
     t = mul32(a[2], a[2]);
@@ -529,6 +543,11 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
     if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
     if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
+    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
+    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
+    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[3]²
     t = mul32(a[3], a[3]);
@@ -538,6 +557,10 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
     if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
     if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
+    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
+    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[4]²
     t = mul32(a[4], a[4]);
@@ -546,6 +569,9 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
     if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
     if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
+    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[5]²
     t = mul32(a[5], a[5]);
@@ -553,6 +579,8 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     s = p11 + t.y; hi = select(0u, 1u, s < p11); s = s + c; hi = hi + select(0u, 1u, s < c); p11 = s; c = hi;
     if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
     if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
+    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
+    if (c > 0u) { p15 = p15 + c; }
 
     // a[6]²
     t = mul32(a[6], a[6]);
