@@ -752,135 +752,66 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
 // -----------------------------------------------------------------------------
 // Field inversion: c = a^(-1) (mod p)
 // Uses Fermat's little theorem: a^(-1) = a^(p-2) mod p
-// This is expensive (256 squarings + ~128 multiplications) but correct
+//
+// Optimized addition chain: 255 squarings + 15 multiplications
+// Based on Peter Dettman's chain for libsecp256k1 (2014)
+// Reference: https://briansmith.org/ecc-inversion-addition-chains-01
+//
+// p-2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
+// Bit structure: [223 ones][0][22 ones][0000][10][11][01]
 // -----------------------------------------------------------------------------
 fn fe_inv(a: array<u32, 8>) -> array<u32, 8> {
-    // p - 2 = 2^256 - 2^32 - 977 - 2 = 2^256 - 2^32 - 979
-    // Binary of p-2 has specific structure we can exploit
+    // ===== BUILD: compute a^(2^n - 1) blocks =====
 
-    // Compute a^(2^n) for various n using repeated squaring
-    let a2 = fe_square(a);           // a^2
-    let a3 = fe_mul(a2, a);          // a^3
-    let a6 = fe_square(a3);          // a^6
-    let a7 = fe_mul(a6, a);          // a^7
-    let a8 = fe_mul(a7, a);          // a^8
-    let a14 = fe_square(a7);         // a^14
-    let a15 = fe_mul(a14, a);        // a^15
+    let a2 = fe_square(a);                     // a^2 (reused in tail)
+    let x2 = fe_mul(a2, a);                    // a^(2^2-1) = a^3
 
-    // Compute a^(2^4-1) = a^15
-    let x4 = a15;
+    var t = fe_square(x2);
+    let x3 = fe_mul(t, a);                     // a^(2^3-1) = a^7
 
-    // Compute a^(2^8-1) = (a^(2^4-1))^16 * a^15
-    var x8 = fe_square(fe_square(fe_square(fe_square(x4))));
-    x8 = fe_mul(x8, x4);
+    t = x3;
+    for (var i = 0u; i < 3u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x3);                         // a^(2^6-1)
+    for (var i = 0u; i < 3u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x3);                         // a^(2^9-1)
+    for (var i = 0u; i < 2u; i = i + 1u) { t = fe_square(t); }
+    let x11 = fe_mul(t, x2);                   // a^(2^11-1)
 
-    // Compute a^(2^16-1)
-    var x16 = x8;
-    for (var i = 0u; i < 8u; i = i + 1u) { x16 = fe_square(x16); }
-    x16 = fe_mul(x16, x8);
+    t = x11;
+    for (var i = 0u; i < 11u; i = i + 1u) { t = fe_square(t); }
+    let x22 = fe_mul(t, x11);                  // a^(2^22-1)
 
-    // Compute a^(2^32-1)
-    var x32 = x16;
-    for (var i = 0u; i < 16u; i = i + 1u) { x32 = fe_square(x32); }
-    x32 = fe_mul(x32, x16);
+    t = x22;
+    for (var i = 0u; i < 22u; i = i + 1u) { t = fe_square(t); }
+    let x44 = fe_mul(t, x22);                  // a^(2^44-1)
 
-    // Compute a^(2^64-1)
-    var x64 = x32;
-    for (var i = 0u; i < 32u; i = i + 1u) { x64 = fe_square(x64); }
-    x64 = fe_mul(x64, x32);
+    t = x44;
+    for (var i = 0u; i < 44u; i = i + 1u) { t = fe_square(t); }
+    let x88 = fe_mul(t, x44);                  // a^(2^88-1)
 
-    // Compute a^(2^128-1)
-    var x128 = x64;
-    for (var i = 0u; i < 64u; i = i + 1u) { x128 = fe_square(x128); }
-    x128 = fe_mul(x128, x64);
+    // ===== ASSEMBLY: combine blocks for p-2 =====
+    // Build a^(2^223-1) = x223
 
-    // Compute a^(2^256-1)
-    var x256 = x128;
-    for (var i = 0u; i < 128u; i = i + 1u) { x256 = fe_square(x256); }
-    x256 = fe_mul(x256, x128);
+    t = x88;
+    for (var i = 0u; i < 88u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x88);                        // a^(2^176-1)
+    for (var i = 0u; i < 44u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x44);                        // a^(2^220-1)
+    for (var i = 0u; i < 3u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x3);                         // a^(2^223-1)
 
-    // Now we have a^(2^256-1)
-    // We need a^(p-2) = a^(2^256 - 2^32 - 979)
-    // = a^(2^256-1) * a^(-2^32-978) -- this doesn't work directly
+    // bit 32 = 0, bits 31-10 = 22 ones
+    for (var i = 0u; i < 23u; i = i + 1u) { t = fe_square(t); }
+    t = fe_mul(t, x22);
 
-    // Alternative: use the fact that p-2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
-    // We compute a^(p-2) directly using square-and-multiply
+    // bits 9-0 = 0000_10_11_01 (2-bit windows)
+    t = fe_square(fe_square(fe_square(fe_square(t))));  // 4 zeros
+    t = fe_square(fe_square(t));
+    t = fe_mul(t, a2);                         // window 10 = a^2
+    t = fe_square(fe_square(t));
+    t = fe_mul(t, x2);                         // window 11 = a^3
+    t = fe_square(fe_square(t));
+    t = fe_mul(t, a);                          // window 01 = a^1
 
-    // Start with a^(2^256 - 2^32 - 979)
-    // = a^((2^256-1) - 2^32 - 978)
-    // This is complex, so we use simpler approach:
-
-    // p-2 in binary is all 1s except positions 32, and last few bits are 0xFC2D = 1111110000101101
-    // Simplified: compute using addition chain
-
-    // a^(p-2) where p = 2^256 - 2^32 - 977
-    // We'll use the identity a^(p-2) for secp256k1
-
-    var result = a;
-
-    // Square 256 times and multiply selectively based on bits of p-2
-    // For secp256k1, p-2 = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
-    //
-    // Bit pattern: bits 255-33 are all 1 (223 ones), bit 32 is 0, bits 31-0 = FFFFFC2D
-    // Starting with result = a handles bit 255, so loop handles bits 254-33 (222 ones)
-
-    // Bits 254-33: all 1s (222 bits, since bit 255 is handled by initialization)
-    for (var i = 0u; i < 222u; i = i + 1u) {
-        result = fe_square(result);
-        result = fe_mul(result, a);
-    }
-
-    // Bit 32 is 0
-    result = fe_square(result);
-
-    // Bits 31-0 = FFFFFC2D
-    // = 1111_1111_1111_1111_1111_1100_0010_1101
-    // Bits 31-12: FFFFF (20 ones)
-    // Bits 11-8: C = 1100 (2 ones, 2 zeros)
-    // Bits 7-4: 2 = 0010 (2 zeros, 1 one, 1 zero)
-    // Bits 3-0: D = 1101 (1 one, 1 one, 1 zero, 1 one)
-
-    // 31-12: 20 ones
-    for (var i = 0u; i < 20u; i = i + 1u) {
-        result = fe_square(result);
-        result = fe_mul(result, a);
-    }
-
-    // bits 11-10: 2 ones (from C = 1100)
-    result = fe_square(result);
-    result = fe_mul(result, a);
-    result = fe_square(result);
-    result = fe_mul(result, a);
-
-    // bits 9-8: 2 zeros (from C = 1100)
-    result = fe_square(result);
-    result = fe_square(result);
-
-    // bits 7-6: 2 zeros (from 2 = 0010)
-    result = fe_square(result);
-    result = fe_square(result);
-
-    // bit 5: 1 (from 2 = 0010)
-    result = fe_square(result);
-    result = fe_mul(result, a);
-
-    // bit 4: 0 (from 2 = 0010)
-    result = fe_square(result);
-
-    // bit 3: 1 (from D = 1101)
-    result = fe_square(result);
-    result = fe_mul(result, a);
-
-    // bit 2: 1 (from D = 1101)
-    result = fe_square(result);
-    result = fe_mul(result, a);
-
-    // bit 1: 0 (from D = 1101)
-    result = fe_square(result);
-
-    // bit 0: 1 (from D = 1101)
-    result = fe_square(result);
-    result = fe_mul(result, a);
-
-    return result;
+    return t;
 }
