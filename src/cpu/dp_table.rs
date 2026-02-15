@@ -1,7 +1,7 @@
 //! Distinguished Point hash table for collision detection
 
 use crate::gpu::GpuDistinguishedPoint;
-use dashmap::DashMap;
+use std::collections::HashMap;
 
 /// Stored DP with full affine X for proper verification
 #[derive(Clone)]
@@ -11,23 +11,22 @@ struct StoredDP {
     ktype: u32,
 }
 
-/// Thread-safe DP table for collision detection
 pub struct DPTable {
-    table: DashMap<u64, Vec<StoredDP>>,
+    table: HashMap<u64, Vec<StoredDP>>,
     start: [u8; 32], // search range start for key computation
 }
 
 impl DPTable {
     pub fn new(start: [u8; 32]) -> Self {
         Self {
-            table: DashMap::new(),
+            table: HashMap::new(),
             start,
         }
     }
 
     /// Insert DP and check for collision
     /// Returns private key if collision found between tame and wild
-    pub fn insert_and_check(&self, dp: GpuDistinguishedPoint) -> Option<Vec<u8>> {
+    pub fn insert_and_check(&mut self, dp: GpuDistinguishedPoint) -> Option<Vec<u8>> {
         let dist_bytes = u32_array_to_bytes(&dp.dist);
 
         // X is already in affine coordinates (no Z conversion needed)
@@ -62,7 +61,7 @@ impl DPTable {
         ]);
 
         // Check for existing DPs with same hash
-        if let Some(mut existing_list) = self.table.get_mut(&hash_key) {
+        if let Some(existing_list) = self.table.get_mut(&hash_key) {
             for existing in existing_list.iter() {
                 // Verify full affine X match (not just hash)
                 if existing.affine_x != affine_x {
@@ -126,14 +125,14 @@ impl DPTable {
     }
 
     pub fn total_dps(&self) -> usize {
-        self.table.iter().map(|entry| entry.value().len()).sum()
+        self.table.values().map(|list| list.len()).sum()
     }
 
     pub fn count_by_type(&self) -> (usize, usize) {
         let mut tame = 0;
         let mut wild = 0;
-        for entry in &self.table {
-            for dp in entry.value() {
+        for list in self.table.values() {
+            for dp in list {
                 if dp.ktype == 0 {
                     tame += 1;
                 } else {
