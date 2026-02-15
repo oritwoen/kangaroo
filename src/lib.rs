@@ -5,6 +5,7 @@
 //!
 //! Supports AMD, NVIDIA, Intel GPUs via wgpu (Vulkan/Metal/DX12).
 
+mod benchmark;
 mod cli;
 mod convert;
 mod cpu;
@@ -324,90 +325,6 @@ fn print_providers_list() {
     }
 }
 
-struct BenchmarkCase {
-    name: &'static str,
-    pubkey: &'static str,
-    start: &'static str,
-    range_bits: u32,
-}
-
-const BENCHMARK_CASES: &[BenchmarkCase] = &[
-    BenchmarkCase {
-        name: "32-bit",
-        pubkey: "03e9e661838a96a65331637e2a3e948dc0756e5009e7cb5c36664d9b72dd18c0a7",
-        start: "80000000",
-        range_bits: 32,
-    },
-    BenchmarkCase {
-        name: "40-bit",
-        pubkey: "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
-        start: "8000000000",
-        range_bits: 40,
-    },
-    BenchmarkCase {
-        name: "48-bit",
-        pubkey: "026864513503daca97ffae5d13d784192f932f304677b9a67a48a41af53f88ad19",
-        start: "800000000000",
-        range_bits: 48,
-    },
-];
-
-fn run_benchmark(gpu_index: u32, backend: gpu_crypto::GpuBackend) -> anyhow::Result<()> {
-    println!("Kangaroo Benchmark Suite");
-    println!("========================\n");
-
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, backend))?;
-    println!("GPU: {}", gpu_context.device_name());
-    println!("Compute units: {}\n", gpu_context.compute_units());
-
-    println!(
-        "{:<10} {:>12} {:>12} {:>14}",
-        "Range", "Time", "Ops", "Rate"
-    );
-    println!("{}", "-".repeat(52));
-
-    let num_k = gpu_context.optimal_kangaroos();
-
-    for case in BENCHMARK_CASES {
-        let pubkey = crypto::parse_pubkey(case.pubkey)?;
-        let start = crypto::parse_hex_u256(case.start)?;
-
-        let dp_bits = (case.range_bits / 2)
-            .saturating_sub((num_k as f64).log2() as u32 / 2)
-            .clamp(8, 40);
-
-        let mut solver = solver::KangarooSolver::new(
-            gpu_context.clone(),
-            pubkey,
-            start,
-            case.range_bits,
-            dp_bits,
-            num_k,
-        )?;
-
-        let start_time = Instant::now();
-        loop {
-            if solver.step()?.is_some() {
-                break;
-            }
-        }
-        let duration = start_time.elapsed();
-        let total_ops = solver.total_operations();
-        let rate = total_ops as f64 / duration.as_secs_f64();
-
-        println!(
-            "{:<10} {:>10.2}s {:>12} {:>12.2}M/s",
-            case.name,
-            duration.as_secs_f64(),
-            total_ops,
-            rate / 1_000_000.0
-        );
-    }
-
-    println!("\n[Copy above results to BENCHMARK.md]");
-    Ok(())
-}
-
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
@@ -417,7 +334,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     if args.benchmark {
-        return run_benchmark(args.gpu, args.backend);
+        return benchmark::run(args.gpu, args.backend);
     }
 
     let params = resolve_params(&args)?;

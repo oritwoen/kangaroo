@@ -16,6 +16,8 @@ kangaroo --benchmark
 | 40-bit | 4.15s | 29,360,128 | 7.08 M/s |
 | 48-bit | 25.16s | 222,298,112 | 8.84 M/s |
 
+*Version: 0.5.0*
+
 ### GPU: NVIDIA GeForce RTX 5060
 
 | Range | Time | Ops | Rate |
@@ -24,7 +26,7 @@ kangaroo --benchmark
 | 40-bit | 3.63s | 29,360,128 | 8.10 M/s |
 | 48-bit | 20.56s | 222,298,112 | 10.81 M/s |
 
-*Version: 0.4.0 (Blelloch batch inversion)*
+*Version: 0.5.0*
 
 ### Performance History
 
