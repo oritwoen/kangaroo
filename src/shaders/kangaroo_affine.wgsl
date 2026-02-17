@@ -314,31 +314,32 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 }
             }
 
-            // Perform affine addition with dual point evaluation (inverse reuse)
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
-                // Compute R = P + J
+                // Compute R = P + J (always walk forward to preserve ergodicity)
                 let result_add = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
 
-                // Compute R' = P - J (reuses same dx_inv since -J has same x-coordinate)
-                // Cost: 2M + 1S (same as R, zero additional inversion)
-                let neg_yj = fe_sub(fe_zero(), jump_point.y);
-                let result_sub = affine_add_with_inv(px, py, jump_point.x, neg_yj, dx_inv);
+                // Virtual DP sampling: also check P - J for DP (inverse reuse)
+                // Cost: 2M + 1S, zero additional inversion.
+                // The walk stays at P+J — P-J is only probed, never walked to.
+                if (!dp_stored) {
+                    let neg_yj = fe_sub(fe_zero(), jump_point.y);
+                    let result_sub = affine_add_with_inv(px, py, jump_point.x, neg_yj, dx_inv);
 
-                // Select whichever has more trailing zeros in x (closer to being a DP)
-                // Doubles the sampling density per step at marginal cost
-                let tz_add = countTrailingZeros(result_add.x[0]);
-                let tz_sub = countTrailingZeros(result_sub.x[0]);
-
-                if (tz_sub > tz_add) {
-                    px = result_sub.x;
-                    py = result_sub.y;
-                    k.dist = scalar_sub_256(k.dist, jump_dist);
-                } else {
-                    px = result_add.x;
-                    py = result_add.y;
-                    k.dist = scalar_add_256(k.dist, jump_dist);
+                    if (is_distinguished(result_sub.x)) {
+                        var vk = k;
+                        vk.x = result_sub.x;
+                        vk.y = result_sub.y;
+                        vk.dist = scalar_sub_256(k.dist, jump_dist);
+                        store_dp(vk, kid);
+                        dp_stored = true;
+                    }
                 }
+
+                // Always walk forward
+                px = result_add.x;
+                py = result_add.y;
+                k.dist = scalar_add_256(k.dist, jump_dist);
             }
         }
     }
