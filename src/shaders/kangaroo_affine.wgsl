@@ -314,15 +314,31 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 }
             }
 
-            // Perform affine addition: P = P + jump_point
+            // Perform affine addition with dual point evaluation (inverse reuse)
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
-                let result = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
-                px = result.x;
-                py = result.y;
+                // Compute R = P + J
+                let result_add = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
 
-                // Update distance
-                k.dist = scalar_add_256(k.dist, jump_dist);
+                // Compute R' = P - J (reuses same dx_inv since -J has same x-coordinate)
+                // Cost: 2M + 1S (same as R, zero additional inversion)
+                let neg_yj = fe_sub(fe_zero(), jump_point.y);
+                let result_sub = affine_add_with_inv(px, py, jump_point.x, neg_yj, dx_inv);
+
+                // Select whichever has more trailing zeros in x (closer to being a DP)
+                // Doubles the sampling density per step at marginal cost
+                let tz_add = countTrailingZeros(result_add.x[0]);
+                let tz_sub = countTrailingZeros(result_sub.x[0]);
+
+                if (tz_sub > tz_add) {
+                    px = result_sub.x;
+                    py = result_sub.y;
+                    k.dist = scalar_sub_256(k.dist, jump_dist);
+                } else {
+                    px = result_add.x;
+                    py = result_add.y;
+                    k.dist = scalar_add_256(k.dist, jump_dist);
+                }
             }
         }
     }
