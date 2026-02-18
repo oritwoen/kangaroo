@@ -198,6 +198,17 @@ fn scalar_add_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     return c;
 }
 
+fn scalar_sub_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
+    var c: array<u32, 8>;
+    var borrow: u32 = 0u;
+    for (var i = 0u; i < 8u; i++) {
+        let diff = a[i] - b[i] - borrow;
+        borrow = select(0u, 1u, a[i] < b[i] + borrow || (borrow == 1u && b[i] == 0xFFFFFFFFu));
+        c[i] = diff;
+    }
+    return c;
+}
+
 // -----------------------------------------------------------------------------
 // Affine point structure for output
 // Note: jac_to_affine and ec_mul_g are in tables.wgsl to avoid circular deps

@@ -314,14 +314,31 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 }
             }
 
-            // Perform affine addition: P = P + jump_point
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
-                let result = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
-                px = result.x;
-                py = result.y;
+                // Compute R = P + J (always walk forward to preserve ergodicity)
+                let result_add = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
 
-                // Update distance
+                // Virtual DP sampling: also check P - J for DP (inverse reuse)
+                // Cost: 2M + 1S, zero additional inversion.
+                // The walk stays at P+J — P-J is only probed, never walked to.
+                if (!dp_stored) {
+                    let neg_yj = fe_sub(fe_zero(), jump_point.y);
+                    let result_sub = affine_add_with_inv(px, py, jump_point.x, neg_yj, dx_inv);
+
+                    if (is_distinguished(result_sub.x)) {
+                        var vk = k;
+                        vk.x = result_sub.x;
+                        vk.y = result_sub.y;
+                        vk.dist = scalar_sub_256(k.dist, jump_dist);
+                        store_dp(vk, kid);
+                        dp_stored = true;
+                    }
+                }
+
+                // Always walk forward
+                px = result_add.x;
+                py = result_add.y;
                 k.dist = scalar_add_256(k.dist, jump_dist);
             }
         }
