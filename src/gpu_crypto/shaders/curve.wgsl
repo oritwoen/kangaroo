@@ -198,26 +198,14 @@ fn scalar_add_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     return c;
 }
 
-// -----------------------------------------------------------------------------
-// 256-bit scalar subtraction (for distance tracking)
-// Wrapping at 2^256 (no modular reduction — distances are plain integers)
-// NOTE: Unrolled manually to avoid dynamic indexing (crashes RADV)
-// -----------------------------------------------------------------------------
-
 fn scalar_sub_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var borrow: u32 = 0u;
-    var diff: u32;
-
-    diff = a[0] - b[0]; borrow = select(0u, 1u, a[0] < b[0]); c[0] = diff;
-    diff = a[1] - b[1] - borrow; borrow = select(0u, 1u, a[1] < b[1] + borrow || (borrow == 1u && b[1] == 0xFFFFFFFFu)); c[1] = diff;
-    diff = a[2] - b[2] - borrow; borrow = select(0u, 1u, a[2] < b[2] + borrow || (borrow == 1u && b[2] == 0xFFFFFFFFu)); c[2] = diff;
-    diff = a[3] - b[3] - borrow; borrow = select(0u, 1u, a[3] < b[3] + borrow || (borrow == 1u && b[3] == 0xFFFFFFFFu)); c[3] = diff;
-    diff = a[4] - b[4] - borrow; borrow = select(0u, 1u, a[4] < b[4] + borrow || (borrow == 1u && b[4] == 0xFFFFFFFFu)); c[4] = diff;
-    diff = a[5] - b[5] - borrow; borrow = select(0u, 1u, a[5] < b[5] + borrow || (borrow == 1u && b[5] == 0xFFFFFFFFu)); c[5] = diff;
-    diff = a[6] - b[6] - borrow; borrow = select(0u, 1u, a[6] < b[6] + borrow || (borrow == 1u && b[6] == 0xFFFFFFFFu)); c[6] = diff;
-    diff = a[7] - b[7] - borrow; c[7] = diff;
-
+    for (var i = 0u; i < 8u; i++) {
+        let diff = a[i] - b[i] - borrow;
+        borrow = select(0u, 1u, a[i] < b[i] + borrow || (borrow == 1u && b[i] == 0xFFFFFFFFu));
+        c[i] = diff;
+    }
     return c;
 }
 
