@@ -9,13 +9,14 @@ use crate::gpu::{
     GpuBuffers, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, KangarooPipeline,
 };
 use crate::math::create_dp_mask;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::time::Instant;
 use tracing::info;
 
 const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
 /// Target dispatch time in milliseconds (stay under TDR threshold)
 const TARGET_DISPATCH_MS: u128 = 50;
+const WORKGROUP_SIZE: u32 = 64;
 
 /// Shared resources for batch mode (pipeline created once, reused)
 #[allow(dead_code)]
@@ -324,7 +325,7 @@ impl KangarooSolver {
             });
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, self.buffers.bind_group(slot), &[]);
-            let workgroups = self.num_kangaroos.div_ceil(64);
+            let workgroups = self.num_kangaroos.div_ceil(WORKGROUP_SIZE);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
@@ -363,10 +364,8 @@ impl KangarooSolver {
             );
         }
 
-        let dp_count = self.read_dp_count(slot)?;
-        if dp_count > 0 {
-            let actual_count = (dp_count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
-            let dps = self.read_dps(slot, actual_count as u32)?;
+        let dps = self.read_slot_dps(slot)?;
+        if !dps.is_empty() {
             for dp in dps {
                 if let Some(key) = self.dp_table.insert_and_check(dp) {
                     return Ok(Some(key));
@@ -384,50 +383,36 @@ impl KangarooSolver {
         self.total_ops
     }
 
-    fn read_dp_count(&self, slot: usize) -> Result<u32> {
-        let staging = self.buffers.staging_buffer(slot);
-        let slice = staging.slice(0..4);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
-        });
-
-        self.ctx
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        rx.recv()??;
-
-        let data = slice.get_mapped_range();
-        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        drop(data);
-        staging.unmap();
-
-        Ok(count)
-    }
-
-    fn read_dps(&self, slot: usize, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
+    fn read_slot_dps(&self, slot: usize) -> Result<Vec<GpuDistinguishedPoint>> {
         let dp_size = std::mem::size_of::<GpuDistinguishedPoint>();
-        let total_size = 4 + (count as usize * dp_size);
+        let total_size = 4 + (MAX_DISTINGUISHED_POINTS as usize * dp_size);
 
         let staging = self.buffers.staging_buffer(slot);
         let slice = staging.slice(0..total_size as u64);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
 
         self.ctx
             .device
             .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        rx.recv()??;
+            .map_err(|e| {
+                anyhow!("Failed to poll GPU device while reading DP staging buffer: {e:?}")
+            })?;
+
+        let map_result = rx
+            .recv()
+            .map_err(|e| anyhow!("Failed to receive DP staging map result: {e}"))?;
+        map_result.map_err(|e| anyhow!("Failed to map DP staging buffer: {e:?}"))?;
 
         let data = slice.get_mapped_range();
+        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let actual_count = (count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
         let dp_bytes = &data[4..];
         let dps: Vec<GpuDistinguishedPoint> = dp_bytes
             .chunks_exact(dp_size)
-            .take(count as usize)
+            .take(actual_count)
             .map(|chunk| *bytemuck::from_bytes::<GpuDistinguishedPoint>(chunk))
             .collect();
 
@@ -525,7 +510,7 @@ impl KangarooSolver {
             });
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, self.buffers.bind_group(0), &[]);
-            let workgroups = self.num_kangaroos.div_ceil(64);
+            let workgroups = self.num_kangaroos.div_ceil(WORKGROUP_SIZE);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 

@@ -256,14 +256,20 @@ impl GpuContext {
         label: &str,
         usage: wgpu::BufferUsages,
         count: u64,
-    ) -> wgpu::Buffer {
-        let size = count * std::mem::size_of::<T>() as u64;
-        self.device.create_buffer(&wgpu::BufferDescriptor {
+    ) -> Result<wgpu::Buffer> {
+        let element_size = std::mem::size_of::<T>() as u64;
+        let size = count.checked_mul(element_size).ok_or_else(|| {
+            anyhow!(
+                "Buffer size overflow for '{label}': count={count}, element_size={element_size}"
+            )
+        })?;
+
+        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size,
             usage,
             mapped_at_creation: false,
-        })
+        }))
     }
 
     /// Create a buffer initialized with data
@@ -303,13 +309,17 @@ impl GpuContext {
 
         let (tx, rx) = futures::channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
 
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        rx.await??;
+            .map_err(|e| anyhow!("Failed to poll GPU device for buffer read: {e:?}"))?;
+
+        let map_result = rx
+            .await
+            .map_err(|_| anyhow!("Buffer map callback channel was dropped"))?;
+        map_result.map_err(|e| anyhow!("Failed to map GPU buffer for reading: {e:?}"))?;
 
         let data = slice.get_mapped_range();
         let result: Vec<T> = bytemuck::cast_slice(&data).to_vec();
