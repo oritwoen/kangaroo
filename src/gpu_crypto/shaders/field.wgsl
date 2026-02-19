@@ -21,28 +21,22 @@ const P7: u32 = 0xFFFFFFFFu;
 fn fe_add(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var carry: u32 = 0u;
-    var sum: u32;
+    let overflow_fix = array<u32, 8>(977u, 1u, 0u, 0u, 0u, 0u, 0u, 0u);
 
-    sum = a[0] + b[0]; carry = select(0u, 1u, sum < a[0]); c[0] = sum;
-    sum = a[1] + b[1] + carry; carry = select(0u, 1u, sum < a[1] || (carry == 1u && sum == a[1])); c[1] = sum;
-    sum = a[2] + b[2] + carry; carry = select(0u, 1u, sum < a[2] || (carry == 1u && sum == a[2])); c[2] = sum;
-    sum = a[3] + b[3] + carry; carry = select(0u, 1u, sum < a[3] || (carry == 1u && sum == a[3])); c[3] = sum;
-    sum = a[4] + b[4] + carry; carry = select(0u, 1u, sum < a[4] || (carry == 1u && sum == a[4])); c[4] = sum;
-    sum = a[5] + b[5] + carry; carry = select(0u, 1u, sum < a[5] || (carry == 1u && sum == a[5])); c[5] = sum;
-    sum = a[6] + b[6] + carry; carry = select(0u, 1u, sum < a[6] || (carry == 1u && sum == a[6])); c[6] = sum;
-    sum = a[7] + b[7] + carry; carry = select(0u, 1u, sum < a[7] || (carry == 1u && sum == a[7])); c[7] = sum;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let r = adc(a[i], b[i], carry);
+        c[i] = r.x;
+        carry = r.y;
+    }
 
     // If overflow (result >= 2^256), reduce by adding 2^32 + 977 (because 2^256 ≡ 2^32 + 977 mod P)
     if (carry == 1u) {
-        var old: u32;
-        old = c[0]; sum = c[0] + 977u; carry = select(0u, 1u, sum < old); c[0] = sum;
-        old = c[1]; sum = c[1] + 1u + carry; carry = select(0u, 1u, sum < old || (carry == 1u && sum == old)); c[1] = sum;
-        old = c[2]; sum = c[2] + carry; carry = select(0u, 1u, sum < old); c[2] = sum;
-        old = c[3]; sum = c[3] + carry; carry = select(0u, 1u, sum < old); c[3] = sum;
-        old = c[4]; sum = c[4] + carry; carry = select(0u, 1u, sum < old); c[4] = sum;
-        old = c[5]; sum = c[5] + carry; carry = select(0u, 1u, sum < old); c[5] = sum;
-        old = c[6]; sum = c[6] + carry; carry = select(0u, 1u, sum < old); c[6] = sum;
-        c[7] = c[7] + carry;
+        carry = 0u;
+        for (var i = 0u; i < 8u; i = i + 1u) {
+            let r = adc(c[i], overflow_fix[i], carry);
+            c[i] = r.x;
+            carry = r.y;
+        }
     }
 
     return c;
@@ -55,30 +49,22 @@ fn fe_add(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
 fn fe_sub(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var borrow: u32 = 0u;
-    var diff: u32;
+    let prime = array<u32, 8>(P0, P1, P2, P3, P4, P5, P6, P7);
 
-    diff = a[0] - b[0]; borrow = select(0u, 1u, a[0] < b[0]); c[0] = diff;
-    diff = a[1] - b[1] - borrow; borrow = select(0u, 1u, a[1] < b[1] + borrow || (borrow == 1u && b[1] == 0xFFFFFFFFu)); c[1] = diff;
-    diff = a[2] - b[2] - borrow; borrow = select(0u, 1u, a[2] < b[2] + borrow || (borrow == 1u && b[2] == 0xFFFFFFFFu)); c[2] = diff;
-    diff = a[3] - b[3] - borrow; borrow = select(0u, 1u, a[3] < b[3] + borrow || (borrow == 1u && b[3] == 0xFFFFFFFFu)); c[3] = diff;
-    diff = a[4] - b[4] - borrow; borrow = select(0u, 1u, a[4] < b[4] + borrow || (borrow == 1u && b[4] == 0xFFFFFFFFu)); c[4] = diff;
-    diff = a[5] - b[5] - borrow; borrow = select(0u, 1u, a[5] < b[5] + borrow || (borrow == 1u && b[5] == 0xFFFFFFFFu)); c[5] = diff;
-    diff = a[6] - b[6] - borrow; borrow = select(0u, 1u, a[6] < b[6] + borrow || (borrow == 1u && b[6] == 0xFFFFFFFFu)); c[6] = diff;
-    diff = a[7] - b[7] - borrow; c[7] = diff; borrow = select(0u, 1u, a[7] < b[7] + borrow || (borrow == 1u && b[7] == 0xFFFFFFFFu));
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let r = sbb(a[i], b[i], borrow);
+        c[i] = r.x;
+        borrow = r.y;
+    }
 
     // If borrow, add p back
     if (borrow == 1u) {
         var carry2: u32 = 0u;
-        var sum2: u32;
-
-        sum2 = c[0] + P0; carry2 = select(0u, 1u, sum2 < c[0]); c[0] = sum2;
-        sum2 = c[1] + P1 + carry2; carry2 = select(0u, 1u, sum2 < c[1] || (carry2 == 1u && sum2 == c[1])); c[1] = sum2;
-        sum2 = c[2] + P2 + carry2; carry2 = select(0u, 1u, sum2 < c[2] || (carry2 == 1u && sum2 == c[2])); c[2] = sum2;
-        sum2 = c[3] + P3 + carry2; carry2 = select(0u, 1u, sum2 < c[3] || (carry2 == 1u && sum2 == c[3])); c[3] = sum2;
-        sum2 = c[4] + P4 + carry2; carry2 = select(0u, 1u, sum2 < c[4] || (carry2 == 1u && sum2 == c[4])); c[4] = sum2;
-        sum2 = c[5] + P5 + carry2; carry2 = select(0u, 1u, sum2 < c[5] || (carry2 == 1u && sum2 == c[5])); c[5] = sum2;
-        sum2 = c[6] + P6 + carry2; carry2 = select(0u, 1u, sum2 < c[6] || (carry2 == 1u && sum2 == c[6])); c[6] = sum2;
-        sum2 = c[7] + P7 + carry2; c[7] = sum2;
+        for (var i = 0u; i < 8u; i = i + 1u) {
+            let r = adc(c[i], prime[i], carry2);
+            c[i] = r.x;
+            carry2 = r.y;
+        }
     }
 
     return c;
@@ -108,6 +94,23 @@ fn mul32(a: u32, b: u32) -> vec2<u32> {
     let hi1 = p3 + (mid >> 16u) + (mid_overflow << 16u) + lo_carry1;
 
     return vec2<u32>(lo1, hi1);
+}
+
+fn adc(a: u32, b: u32, carry: u32) -> vec2<u32> {
+    let sum1 = a + b;
+    let carry1 = select(0u, 1u, sum1 < a);
+    let sum2 = sum1 + carry;
+    let carry2 = select(0u, 1u, sum2 < sum1);
+    let carry_out = select(0u, 1u, (carry1 + carry2) > 0u);
+    return vec2<u32>(sum2, carry_out);
+}
+
+fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
+    let rhs = b + borrow;
+    let rhs_overflow = select(0u, 1u, rhs < b);
+    let diff = a - rhs;
+    let borrow_out = select(0u, 1u, a < rhs || rhs_overflow == 1u);
+    return vec2<u32>(diff, borrow_out);
 }
 
 // -----------------------------------------------------------------------------
