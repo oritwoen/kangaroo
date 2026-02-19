@@ -64,20 +64,20 @@ impl GpuBuffers {
             "Kangaroos Buffer",
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             num_kangaroos as u64,
-        );
+        )?;
 
         let kangaroos_size = (num_kangaroos as usize) * std::mem::size_of::<GpuKangaroo>();
         let dp_size = (max_dps as usize) * std::mem::size_of::<GpuDistinguishedPoint>();
         let staging_size = std::cmp::max(kangaroos_size, dp_size) as u64 + 4;
 
-        let slots = std::array::from_fn(|i| {
+        let make_slot = |i: usize| -> Result<DpSlot> {
             let label_suffix = if i == 0 { "A" } else { "B" };
 
             let dp_buffer = ctx.create_buffer::<GpuDistinguishedPoint>(
                 &format!("DP Buffer {label_suffix}"),
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
                 max_dps as u64,
-            );
+            )?;
 
             let dp_count_buffer = ctx.create_buffer_init(
                 &format!("DP Count Buffer {label_suffix}"),
@@ -89,7 +89,7 @@ impl GpuBuffers {
                 &format!("Staging Buffer {label_suffix}"),
                 BufferUsages::MAP_READ | BufferUsages::COPY_DST,
                 staging_size,
-            );
+            )?;
 
             let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(if i == 0 {
@@ -126,13 +126,15 @@ impl GpuBuffers {
                 ],
             });
 
-            DpSlot {
+            Ok(DpSlot {
                 dp_buffer,
                 dp_count_buffer,
                 staging_buffer,
                 bind_group,
-            }
-        });
+            })
+        };
+
+        let slots = [make_slot(0)?, make_slot(1)?];
 
         Ok(Self {
             config_buffer,
