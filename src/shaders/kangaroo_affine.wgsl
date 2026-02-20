@@ -30,7 +30,7 @@ struct Kangaroo {
     _padding: array<u32, 3>
 }
 
-const REPEAT_THRESHOLD: u32 = 8u;
+const REPEAT_THRESHOLD: u32 = 3u;
 
 struct DistinguishedPoint {
     x: array<u32, 8>,
@@ -377,7 +377,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 }
 
                 k.cycle_counter = k.cycle_counter + 1u;
-                let new_jump = px[0] & 0xFFu;
+                let new_jump = px[0] & 0xFFFFu;
                 if (new_jump == (k.repeat_count >> 16u)) {
                     let cnt = (k.repeat_count & 0xFFFFu) + 1u;
                     k.repeat_count = (new_jump << 16u) | cnt;
