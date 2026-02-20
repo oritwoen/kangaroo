@@ -239,8 +239,9 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
 
     let wild_uint = K256U256::from_le_slice(&pad_to_32(wild_dist));
     let wild_scalar = Scalar::reduce(wild_uint);
+    let neg_start = Scalar::ZERO - start_scalar;
 
-    let mut candidates = Vec::with_capacity(4);
+    let mut candidates = Vec::with_capacity(8);
 
     let k1 = start_scalar + tame_scalar - wild_scalar;
     candidates.push(scalar_to_key_bytes(&k1));
@@ -253,6 +254,18 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
 
     let k4 = start_scalar - tame_scalar + wild_scalar;
     candidates.push(scalar_to_key_bytes(&k4));
+
+    let k5 = neg_start + tame_scalar - wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k5));
+
+    let k6 = neg_start - tame_scalar - wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k6));
+
+    let k7 = neg_start + tame_scalar + wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k7));
+
+    let k8 = neg_start - tame_scalar + wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k8));
 
     candidates
 }
