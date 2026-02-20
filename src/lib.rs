@@ -429,7 +429,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Verification: SUCCESS");
                 info!("Total operations: {}", solver.total_ops());
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
-                info!("K-factor: {:.3}", solver.total_ops() as f64 / (2.0_f64).powf(range_bits as f64 / 2.0));
+                info!(
+                    "K-factor: {:.3}",
+                    solver.total_ops() as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                );
             }
 
             if let Some(ref output) = args.output {
@@ -532,7 +535,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Verification: SUCCESS");
                 info!("Total operations: {}", total_ops);
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
-                info!("K-factor: {:.3}", total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0));
+                info!(
+                    "K-factor: {:.3}",
+                    total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                );
             }
 
             if let Some(ref output) = args.output {
