@@ -241,11 +241,8 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
     let start_uint = K256U256::from_le_slice(start);
     let start_scalar = Scalar::reduce(start_uint);
 
-    let tame_uint = K256U256::from_le_slice(&pad_to_32(tame_dist));
-    let tame_scalar = Scalar::reduce(tame_uint);
-
-    let wild_uint = K256U256::from_le_slice(&pad_to_32(wild_dist));
-    let wild_scalar = Scalar::reduce(wild_uint);
+    let tame_scalar = distance_to_scalar(&pad_to_32(tame_dist));
+    let wild_scalar = distance_to_scalar(&pad_to_32(wild_dist));
 
     let candidates = compute_candidate_scalars(start_scalar, tame_scalar, wild_scalar);
     let mut keys = Vec::with_capacity(8);
@@ -259,6 +256,45 @@ fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
     let mut result = [0u8; 32];
     let len = bytes.len().min(32);
     result[..len].copy_from_slice(&bytes[..len]);
+    result
+}
+
+/// Convert GPU unsigned 256-bit distance to scalar field element.
+///
+/// GPU distances use unsigned 256-bit wrapping arithmetic (mod 2^256).
+/// When a distance goes negative (kangaroo walks backward past zero),
+/// the GPU produces `2^256 - d`. Using `Scalar::reduce` directly on this
+/// gives `(2^256 - d) mod n`, which differs from the correct `-d mod n = n - d`
+/// by a constant `c = 2^256 mod n ≈ 4.3 × 10^38`.
+///
+/// We interpret the 256-bit value as signed (two's complement) via bit 255:
+/// - If bit 255 is clear: positive distance, use `Scalar::reduce` directly
+/// - If bit 255 is set: negative distance, negate to get `d`, then return `n - d`
+///
+/// This is correct for all practical distances where `|d| < 2^255`.
+fn distance_to_scalar(dist_le_bytes: &[u8; 32]) -> Scalar {
+    let is_negative = dist_le_bytes[31] & 0x80 != 0;
+
+    if is_negative {
+        // Two's complement negation: d = 2^256 - stored
+        let pos_bytes = negate_u256_bytes(dist_le_bytes);
+        let pos_uint = K256U256::from_le_slice(&pos_bytes);
+        Scalar::ZERO - <Scalar as Reduce<K256U256>>::reduce(pos_uint)
+    } else {
+        let uint = K256U256::from_le_slice(dist_le_bytes);
+        <Scalar as Reduce<K256U256>>::reduce(uint)
+    }
+}
+
+/// Two's complement negation of a 256-bit LE value: returns `2^256 - value`.
+fn negate_u256_bytes(bytes: &[u8; 32]) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    let mut carry = 1u16;
+    for i in 0..32 {
+        let val = (!bytes[i]) as u16 + carry;
+        result[i] = val as u8;
+        carry = val >> 8;
+    }
     result
 }
 
@@ -761,47 +797,171 @@ mod tests {
 
     #[test]
     fn test_signed_distance_wrapping() {
-        // Large distance near 2^256 representing negative offset.
-        // tame_dist = n-10 (huge LE repr, acts as -10 in scalar arithmetic)
-        // Formula 1: k = start + tame_dist - wild_dist
-        //              = 100 + (n-10) - 24 = 100 - 10 - 24 = 66 (mod n) ✓
+        // GPU-style wrapped negative distance via unsigned 256-bit subtraction.
+        // GPU produces 2^256 - d (NOT n - d) when distance underflows.
+        // k = start + tame_dist - wild_dist = 100 + (-10) - 24 = 66
         let k = scalar_from_u64(66);
         let start_s = scalar_from_u64(100);
-        let tame_dist = Scalar::ZERO - scalar_from_u64(10); // n - 10
         let wild_dist = scalar_from_u64(24);
 
-        // Verify the scalar arithmetic resolves correctly
-        assert_eq!(start_s + tame_dist - wild_dist, k);
-
         let pubkey = ProjectivePoint::mul_by_generator(&k);
-        // Collision at (start + tame_dist)*G = (100-10)*G = 90*G
-        let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        // Collision at (start - 10)*G = 90*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - scalar_from_u64(10)));
         assert_eq!(
             collision_point,
             ProjectivePoint::mul_by_generator(&scalar_from_u64(90))
         );
 
-        // Verify tame_dist LE bytes are indeed large (near 2^256)
-        let tame_le = scalar_to_le_bytes(&tame_dist);
+        // GPU unsigned wrapping: 2^256 - 10 (bit 255 set → negative in signed interp)
+        let tame_dist_u32 = gpu_wrapped_neg_u64(10);
         assert!(
-            tame_le[31] > 0xF0,
-            "tame_dist LE repr should have large high byte, got {:#x}",
-            tame_le[31]
+            tame_dist_u32[7] & 0x80000000 != 0,
+            "GPU-wrapped distance should have bit 255 set"
         );
 
         let start = scalar_to_le_bytes(&start_s);
         let mut table = DPTable::new(start, pubkey);
 
-        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        let tame_dp = GpuDistinguishedPoint {
+            x: point_to_x_u32(&collision_point),
+            dist: tame_dist_u32,
+            ktype: 0,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        };
         assert!(table.insert_and_check(tame_dp).is_none());
 
         let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
         let result = table.insert_and_check(wild_dp);
         assert!(
             result.is_some(),
-            "Should resolve collision with large wrapped distance"
+            "Should resolve collision with GPU unsigned wrapped distance"
         );
         assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    /// Two's complement negate of u64 as `[u32; 8]` LE limbs: returns `2^256 - d`.
+    fn gpu_wrapped_neg_u64(d: u64) -> [u32; 8] {
+        let mut d_limbs = [0u32; 8];
+        d_limbs[0] = d as u32;
+        d_limbs[1] = (d >> 32) as u32;
+
+        let mut result = [0u32; 8];
+        let mut carry = 1u64;
+        for i in 0..8 {
+            let val = (!d_limbs[i]) as u64 + carry;
+            result[i] = val as u32;
+            carry = val >> 32;
+        }
+        result
+    }
+
+    #[test]
+    fn test_gpu_unsigned_wrap_distance() {
+        // GPU produces 2^256 - d via unsigned subtraction, NOT n - d.
+        // This is the actual representation the GPU shader generates when
+        // scalar_sub_256 underflows. Before fix, Scalar::reduce(2^256-d) gave
+        // wrong result (off by c = 2^256 mod n ≈ 4.3e38).
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(100);
+        let wild_dist = scalar_from_u64(24);
+
+        // tame walked -10 steps → GPU stores 2^256 - 10
+        // k = start + tame_dist - wild_dist = 100 + (-10) - 24 = 66
+        let tame_dist_u32 = gpu_wrapped_neg_u64(10);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - scalar_from_u64(10)));
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = GpuDistinguishedPoint {
+            x: point_to_x_u32(&collision_point),
+            dist: tame_dist_u32,
+            ktype: 0,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        };
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should resolve collision with GPU unsigned wrapped distance (2^256 - d)"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_gpu_unsigned_wrap_both_distances() {
+        // Both tame and wild have GPU-wrapped negative distances.
+        // k = start + tame_dist - wild_dist = 200 + (-30) - (-8) = 200 - 30 + 8 = 178
+        let k = scalar_from_u64(178);
+        let start_s = scalar_from_u64(200);
+
+        let tame_dist_u32 = gpu_wrapped_neg_u64(30);
+        let wild_dist_u32 = gpu_wrapped_neg_u64(8);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Collision point: (start - 30)*G = 170*G, wild at (k - 8)*G = 170*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - scalar_from_u64(30)));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(k - scalar_from_u64(8)))
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = GpuDistinguishedPoint {
+            x: point_to_x_u32(&collision_point),
+            dist: tame_dist_u32,
+            ktype: 0,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        };
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = GpuDistinguishedPoint {
+            x: point_to_x_u32(&collision_point),
+            dist: wild_dist_u32,
+            ktype: 1,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        };
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should resolve collision with both distances GPU-wrapped"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_distance_to_scalar_unit() {
+        // Positive distance: 42
+        let mut pos_le = [0u8; 32];
+        pos_le[0] = 42;
+        let s = super::distance_to_scalar(&pos_le);
+        assert_eq!(s, scalar_from_u64(42));
+
+        // Negative distance: 2^256 - 1 (GPU repr of -1) → should give n - 1
+        let neg_one = [0xFFu8; 32];
+        let s = super::distance_to_scalar(&neg_one);
+        assert_eq!(s, Scalar::ZERO - scalar_from_u64(1));
+
+        // Negative distance: 2^256 - 10 → should give n - 10
+        let mut neg_ten = [0xFFu8; 32];
+        neg_ten[0] = 0xF6;
+        let s = super::distance_to_scalar(&neg_ten);
+        assert_eq!(s, Scalar::ZERO - scalar_from_u64(10));
+
+        // Zero distance
+        let zero = [0u8; 32];
+        let s = super::distance_to_scalar(&zero);
+        assert_eq!(s, Scalar::ZERO);
     }
 
     #[test]
