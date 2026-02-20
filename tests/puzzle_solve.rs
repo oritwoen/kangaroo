@@ -209,6 +209,60 @@ fn test_smoke_puzzle_20() {
     }
 }
 
+/// Verify that multi-set (3-type) kangaroos solve puzzle 20 correctly.
+/// 3-set is now the default behavior — tame, wild₁, wild₂ — so this test
+/// confirms the solver works without any special flags.
+#[test]
+fn test_multi_set_puzzle_20() {
+    println!("\n=== Multi-Set Test: Puzzle 20 (3-type kangaroos) ===");
+
+    let puzzle = get_smoke_test_puzzle();
+    println!("  Target: {}", puzzle.pubkey);
+    println!("  Range: {} bits", puzzle.range_bits);
+    println!("  Expected: 0x{}", puzzle.expected_key);
+
+    // Initialize GPU/CPU
+    let ctx = match init_context() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  \x1b[31m✗ SKIP: {}\x1b[0m", e);
+            return;
+        }
+    };
+
+    let start_time = Instant::now();
+    let result = solve_puzzle(&puzzle, &ctx);
+    let elapsed = start_time.elapsed();
+
+    match result {
+        SolveResult::Found(key) => {
+            let normalized_found = normalize_key(&key);
+            let normalized_expected = normalize_key(puzzle.expected_key);
+
+            assert_eq!(
+                normalized_found, normalized_expected,
+                "Multi-set solver found wrong key: expected 0x{}, got 0x{}",
+                puzzle.expected_key, key
+            );
+
+            println!(
+                "  \x1b[32m✓ PASS: Multi-set solved 0x{} in {:.2}s\x1b[0m",
+                key,
+                elapsed.as_secs_f64()
+            );
+        }
+        SolveResult::Timeout => {
+            panic!(
+                "Multi-set solver timeout after {}s - 3-type kangaroos may be broken",
+                TIMEOUT_SECS
+            );
+        }
+        SolveResult::Error(e) => {
+            panic!("Multi-set solver error: {}", e);
+        }
+    }
+}
+
 #[test]
 #[ignore] // Run with: cargo test --test puzzle_solve -- --ignored
 fn test_all_puzzles() {
