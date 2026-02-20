@@ -77,6 +77,7 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `--max-ops` | 0 | Max operations (0 = unlimited) |
 | `--cpu` | false | Use CPU solver instead of GPU |
 | `--json` | false | Output benchmark results in JSON format |
+| `--save-benchmarks` | false | Save benchmark run to `BENCHMARKS.md` (with `--benchmark`) |
 | `--list-providers` | false | List available puzzles from providers |
 
 Either `--target` or `--pubkey` is required.
@@ -119,7 +120,7 @@ The Pollard's Kangaroo algorithm solves the discrete logarithm problem in O(√n
 
 Expected operations: ~2^(range_bits/2)
 
-Run `kangaroo --benchmark` to test your hardware. See [BENCHMARKS.md](BENCHMARKS.md) for results on various GPUs.
+Run `kangaroo --benchmark` to test your hardware without touching files. Use `kangaroo --benchmark --save-benchmarks` to update [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Use Cases
 
