@@ -219,17 +219,24 @@ fn compute_private_key_legacy(
     result[first_nonzero..].to_vec()
 }
 
-/// Compute 4 candidate private keys for negation map collision resolution.
-///
-/// When using the negation map, the tame/wild distances can have mixed signs.
-/// We try all 4 combinations of (±tame_dist, ±wild_dist) and verify each.
-///
-/// The canonical formula is: k = start + tame_dist - wild_dist
-/// But with negation map, the actual formula might be any of:
-///   k = start + tame_dist - wild_dist
-///   k = start - tame_dist - wild_dist  (tame walked in negated direction)
-///   k = start + tame_dist + wild_dist  (wild walked in negated direction)
-///   k = start - tame_dist + wild_dist  (both walked in negated direction)
+pub(crate) fn compute_candidate_scalars(
+    base: Scalar,
+    tame_d: Scalar,
+    wild_d: Scalar,
+) -> [Scalar; 8] {
+    let neg_base = Scalar::ZERO - base;
+    [
+        base + tame_d - wild_d,
+        base - tame_d - wild_d,
+        base + tame_d + wild_d,
+        base - tame_d + wild_d,
+        neg_base + tame_d - wild_d,
+        neg_base - tame_d - wild_d,
+        neg_base + tame_d + wild_d,
+        neg_base - tame_d + wild_d,
+    ]
+}
+
 fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) -> Vec<Vec<u8>> {
     let start_uint = K256U256::from_le_slice(start);
     let start_scalar = Scalar::reduce(start_uint);
@@ -240,21 +247,12 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
     let wild_uint = K256U256::from_le_slice(&pad_to_32(wild_dist));
     let wild_scalar = Scalar::reduce(wild_uint);
 
-    let mut candidates = Vec::with_capacity(4);
-
-    let k1 = start_scalar + tame_scalar - wild_scalar;
-    candidates.push(scalar_to_key_bytes(&k1));
-
-    let k2 = start_scalar - tame_scalar - wild_scalar;
-    candidates.push(scalar_to_key_bytes(&k2));
-
-    let k3 = start_scalar + tame_scalar + wild_scalar;
-    candidates.push(scalar_to_key_bytes(&k3));
-
-    let k4 = start_scalar - tame_scalar + wild_scalar;
-    candidates.push(scalar_to_key_bytes(&k4));
-
-    candidates
+    let candidates = compute_candidate_scalars(start_scalar, tame_scalar, wild_scalar);
+    let mut keys = Vec::with_capacity(8);
+    for candidate in &candidates {
+        keys.push(scalar_to_key_bytes(candidate));
+    }
+    keys
 }
 
 fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
@@ -393,6 +391,27 @@ mod tests {
         }
     }
 
+    fn assert_solves_with_dps(
+        start_s: Scalar,
+        k: Scalar,
+        tame_dist: Scalar,
+        wild_dist: Scalar,
+        tame_point: ProjectivePoint,
+        wild_point: ProjectivePoint,
+    ) {
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&tame_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&wild_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(result.is_some(), "Collision should resolve to a valid key");
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
     // --- Four-formula collision tests ---
 
     #[test]
@@ -524,6 +543,220 @@ mod tests {
             "Should find key via k = start - tame_dist + wild_dist"
         );
         assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_eight_formula_case1() {
+        let start_s = scalar_from_u64(50);
+        let tame_dist = scalar_from_u64(30);
+        let wild_dist = scalar_from_u64(14);
+        let k = start_s + tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case2() {
+        let start_s = scalar_from_u64(100);
+        let tame_dist = scalar_from_u64(20);
+        let wild_dist = scalar_from_u64(14);
+        let k = start_s - tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case3() {
+        let start_s = scalar_from_u64(30);
+        let tame_dist = scalar_from_u64(20);
+        let wild_dist = scalar_from_u64(16);
+        let k = start_s + tame_dist + wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k - wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case4() {
+        let start_s = scalar_from_u64(80);
+        let tame_dist = scalar_from_u64(30);
+        let wild_dist = scalar_from_u64(16);
+        let k = start_s - tame_dist + wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k - wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case5() {
+        let start_s = scalar_from_u64(90);
+        let tame_dist = scalar_from_u64(11);
+        let wild_dist = scalar_from_u64(7);
+        let neg_start = Scalar::ZERO - start_s;
+        let k = neg_start + tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, -wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case6() {
+        let start_s = scalar_from_u64(95);
+        let tame_dist = scalar_from_u64(19);
+        let wild_dist = scalar_from_u64(9);
+        let neg_start = Scalar::ZERO - start_s;
+        let k = neg_start - tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, -wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case7() {
+        let start_s = scalar_from_u64(104);
+        let tame_dist = scalar_from_u64(15);
+        let wild_dist = scalar_from_u64(6);
+        let neg_start = Scalar::ZERO - start_s;
+        let k = neg_start + tame_dist + wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k - wild_dist));
+        assert_eq!(tame_point, -wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_eight_formula_case8() {
+        let start_s = scalar_from_u64(77);
+        let tame_dist = scalar_from_u64(13);
+        let wild_dist = scalar_from_u64(5);
+        let neg_start = Scalar::ZERO - start_s;
+        let k = neg_start - tame_dist + wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k - wild_dist));
+        assert_eq!(tame_point, -wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_xonly_negation_via_dptable() {
+        let start_s = scalar_from_u64(120);
+        let tame_dist = scalar_from_u64(21);
+        let wild_dist = scalar_from_u64(8);
+        let neg_start = Scalar::ZERO - start_s;
+        let k = neg_start - tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, -wild_point);
+
+        let tame_x = point_to_x_u32(&tame_point);
+        let wild_x = point_to_x_u32(&wild_point);
+        assert_eq!(tame_x, wild_x, "x-only DP collision must match");
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_candidate_zero_tame_distance() {
+        let start_s = scalar_from_u64(66);
+        let tame_dist = Scalar::ZERO;
+        let wild_dist = scalar_from_u64(17);
+        let k = start_s - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_candidate_zero_wild_distance() {
+        let start_s = scalar_from_u64(66);
+        let tame_dist = scalar_from_u64(9);
+        let wild_dist = Scalar::ZERO;
+        let k = start_s + tame_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_candidate_equal_distances() {
+        let start_s = scalar_from_u64(73);
+        let tame_dist = scalar_from_u64(15);
+        let wild_dist = scalar_from_u64(15);
+        let k = start_s;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_candidate_zero_start() {
+        let start_s = Scalar::ZERO;
+        let tame_dist = scalar_from_u64(23);
+        let wild_dist = scalar_from_u64(11);
+        let k = tame_dist - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(start_s, k, tame_dist, wild_dist, tame_point, wild_point);
+    }
+
+    #[test]
+    fn test_virtual_dp_flipped_distance() {
+        let start_s = scalar_from_u64(100);
+        let walk_dist = scalar_from_u64(20);
+        let jump_dist = scalar_from_u64(7);
+        let tame_dist_virtual = walk_dist + jump_dist;
+        let wild_dist = scalar_from_u64(61);
+        let k = start_s + tame_dist_virtual - wild_dist;
+
+        let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist_virtual));
+        let wild_point = ProjectivePoint::mul_by_generator(&(k + wild_dist));
+        assert_eq!(tame_point, wild_point);
+
+        assert_solves_with_dps(
+            start_s,
+            k,
+            tame_dist_virtual,
+            wild_dist,
+            tame_point,
+            wild_point,
+        );
     }
 
     #[test]
