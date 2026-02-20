@@ -8,6 +8,18 @@ use std::collections::HashMap;
 
 const MAX_DISTINGUISHED_POINTS: usize = 65_536;
 
+/// SCALAR_HALF = (n+1)/2 where n is secp256k1 order
+/// Property: 2 × SCALAR_HALF ≡ 1 (mod n)
+/// Used for resolving wild₁↔wild₂ collisions via k = (d₂ - d₁) × SCALAR_HALF
+pub(crate) fn scalar_half() -> Scalar {
+    let bytes = [
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b,
+        0x20, 0xa1,
+    ];
+    Scalar::reduce(K256U256::from_be_slice(&bytes))
+}
+
 /// Stored DP with full affine X for proper verification
 #[derive(Clone)]
 struct StoredDP {
@@ -943,6 +955,36 @@ mod tests {
         assert!(
             result.is_none(),
             "Should return None when no formula produces valid key"
+        );
+    }
+
+    #[test]
+    fn test_scalar_half_inverse_of_two() {
+        // Verify that 2 × SCALAR_HALF ≡ 1 (mod n)
+        let half = super::scalar_half();
+        let two = scalar_from_u64(2);
+        let product = two * half;
+        assert_eq!(
+            product,
+            Scalar::ONE,
+            "2 × SCALAR_HALF should equal 1 (mod n)"
+        );
+    }
+
+    #[test]
+    fn test_scalar_half_value() {
+        // Verify SCALAR_HALF has the correct byte representation
+        let half = super::scalar_half();
+        let bytes = half.to_bytes();
+        let expected = [
+            0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46,
+            0x68, 0x1b, 0x20, 0xa1,
+        ];
+        assert_eq!(
+            bytes.as_slice(),
+            &expected,
+            "SCALAR_HALF bytes should match expected value"
         );
     }
 }
