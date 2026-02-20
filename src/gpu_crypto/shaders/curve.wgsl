@@ -178,22 +178,20 @@ fn jac_add_affine(
 
 // -----------------------------------------------------------------------------
 // 256-bit scalar addition (for distance tracking)
-// NOTE: Unrolled manually to avoid dynamic indexing (crashes RADV)
 // -----------------------------------------------------------------------------
 
 fn scalar_add_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var carry: u32 = 0u;
-    var sum: u32;
 
-    sum = a[0] + b[0] + carry; carry = select(0u, 1u, sum < a[0] || (carry == 1u && sum <= a[0])); c[0] = sum;
-    sum = a[1] + b[1] + carry; carry = select(0u, 1u, sum < a[1] || (carry == 1u && sum <= a[1])); c[1] = sum;
-    sum = a[2] + b[2] + carry; carry = select(0u, 1u, sum < a[2] || (carry == 1u && sum <= a[2])); c[2] = sum;
-    sum = a[3] + b[3] + carry; carry = select(0u, 1u, sum < a[3] || (carry == 1u && sum <= a[3])); c[3] = sum;
-    sum = a[4] + b[4] + carry; carry = select(0u, 1u, sum < a[4] || (carry == 1u && sum <= a[4])); c[4] = sum;
-    sum = a[5] + b[5] + carry; carry = select(0u, 1u, sum < a[5] || (carry == 1u && sum <= a[5])); c[5] = sum;
-    sum = a[6] + b[6] + carry; carry = select(0u, 1u, sum < a[6] || (carry == 1u && sum <= a[6])); c[6] = sum;
-    sum = a[7] + b[7] + carry; c[7] = sum;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let sum1 = a[i] + b[i];
+        let carry1 = select(0u, 1u, sum1 < a[i]);
+        let sum2 = sum1 + carry;
+        let carry2 = select(0u, 1u, sum2 < sum1);
+        c[i] = sum2;
+        carry = select(0u, 1u, (carry1 + carry2) > 0u);
+    }
 
     return c;
 }

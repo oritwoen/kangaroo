@@ -223,6 +223,7 @@ src/
 
 - Rust 1.70+
 - Vulkan-capable GPU (AMD, NVIDIA, Intel) or Metal (macOS)
+- On Linux with AMD RADV, Mesa 25.x or newer is required (older Mesa versions may crash on WGSL dynamic indexing in shader loops)
 - GPU drivers installed
 
 ## License
