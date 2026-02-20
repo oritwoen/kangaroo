@@ -3,9 +3,10 @@
 //! Used for performance comparison with GPU implementation.
 
 use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+use k256::elliptic_curve::point::AffineCoordinates;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::U256 as K256U256;
-use k256::{ProjectivePoint, Scalar};
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -78,6 +79,13 @@ impl CpuKangarooSolver {
         let mut wild_pos = self.pubkey;
         let mut wild_dist = Scalar::ZERO;
 
+        let mut tame_cycle_counter: u32 = 0;
+        let mut wild_cycle_counter: u32 = 0;
+        let mut tame_last_jump: usize = 16;
+        let mut wild_last_jump: usize = 16;
+        let mut tame_repeat: u32 = 0;
+        let mut wild_repeat: u32 = 0;
+
         // Jump table (Scalar distances)
         let jump_distances: Vec<Scalar> = (0..16)
             .map(|i| {
@@ -113,52 +121,105 @@ impl CpuKangarooSolver {
 
         loop {
             if start_time.elapsed() > timeout {
-                return None;
+                return self.bruteforce_fallback();
             }
 
             // Tame step
-            let tame_x = get_x_low(&tame_pos);
+            let tame_affine = tame_pos.to_affine();
+            let tame_x = get_x_low_from_affine(&tame_affine);
+            let tame_dist_before = tame_dist;
             let jump_idx = (tame_x & 15) as usize;
-            tame_pos += jump_points[jump_idx];
-            tame_dist += jump_distances[jump_idx];
+            let y_is_odd: bool = bool::from(tame_affine.y_is_odd());
+            if y_is_odd {
+                tame_pos -= jump_points[jump_idx];
+                tame_dist -= jump_distances[jump_idx];
+            } else {
+                tame_pos += jump_points[jump_idx];
+                tame_dist += jump_distances[jump_idx];
+            }
             self.ops += 1;
+
+            tame_cycle_counter += 1;
+            if jump_idx == tame_last_jump {
+                tame_repeat += 1;
+            } else {
+                tame_repeat = 0;
+            }
+            tame_last_jump = jump_idx;
+            if tame_cycle_counter > 1024 || tame_repeat > 4 {
+                let escape_idx = ((tame_cycle_counter as usize)
+                    .wrapping_mul(31)
+                    .wrapping_add(jump_idx)
+                    .wrapping_add(self.ops as usize))
+                    & 15;
+                tame_pos += jump_points[escape_idx];
+                tame_dist += jump_distances[escape_idx];
+                tame_cycle_counter = 0;
+                tame_repeat = 0;
+                tame_last_jump = escape_idx;
+            }
 
             // Check DP
             if (tame_x & self.dp_mask) == 0 {
                 if let Some(&wild_d) = self.wild_table.get(&tame_x) {
                     tracing::info!("Collision Tame->Wild: x={:x}", tame_x);
-                    // Collision!
-                    // Tame pos: mid + tame_dist
-                    // Wild pos: key + wild_dist
-                    // mid + tame_dist = key + wild_dist
-                    // key = mid + tame_dist - wild_dist
-                    let key = mid + tame_dist - wild_d;
-                    let key_bytes = key.to_bytes();
-                    let key_vec = key_bytes.to_vec();
-                    // Verify? (Optional, caller does it)
-                    return Some(key_vec);
+                    if let Some(key) =
+                        try_four_candidates(mid, tame_dist_before, wild_d, &self.pubkey)
+                    {
+                        return Some(key);
+                    }
                 }
-                self.tame_table.insert(tame_x, tame_dist);
+                self.tame_table.insert(tame_x, tame_dist_before);
+                tame_cycle_counter = 0;
             }
 
             // Wild step
-            let wild_x = get_x_low(&wild_pos);
+            let wild_affine = wild_pos.to_affine();
+            let wild_x = get_x_low_from_affine(&wild_affine);
+            let wild_dist_before = wild_dist;
             let jump_idx = (wild_x & 15) as usize;
-            wild_pos += jump_points[jump_idx];
-            wild_dist += jump_distances[jump_idx];
+            let y_is_odd: bool = bool::from(wild_affine.y_is_odd());
+            if y_is_odd {
+                wild_pos -= jump_points[jump_idx];
+                wild_dist -= jump_distances[jump_idx];
+            } else {
+                wild_pos += jump_points[jump_idx];
+                wild_dist += jump_distances[jump_idx];
+            }
             self.ops += 1;
+
+            wild_cycle_counter += 1;
+            if jump_idx == wild_last_jump {
+                wild_repeat += 1;
+            } else {
+                wild_repeat = 0;
+            }
+            wild_last_jump = jump_idx;
+            if wild_cycle_counter > 1024 || wild_repeat > 4 {
+                let escape_idx = ((wild_cycle_counter as usize)
+                    .wrapping_mul(31)
+                    .wrapping_add(jump_idx)
+                    .wrapping_add(self.ops as usize))
+                    & 15;
+                wild_pos += jump_points[escape_idx];
+                wild_dist += jump_distances[escape_idx];
+                wild_cycle_counter = 0;
+                wild_repeat = 0;
+                wild_last_jump = escape_idx;
+            }
 
             // Check DP
             if (wild_x & self.dp_mask) == 0 {
                 if let Some(&tame_d) = self.tame_table.get(&wild_x) {
                     tracing::info!("Collision Wild->Tame: x={:x}", wild_x);
-                    // Collision!
-                    // key = mid + tame_dist - wild_dist
-                    let key = mid + tame_d - wild_dist;
-                    let key_bytes = key.to_bytes();
-                    return Some(key_bytes.to_vec());
+                    if let Some(key) =
+                        try_four_candidates(mid, tame_d, wild_dist_before, &self.pubkey)
+                    {
+                        return Some(key);
+                    }
                 }
-                self.wild_table.insert(wild_x, wild_dist);
+                self.wild_table.insert(wild_x, wild_dist_before);
+                wild_cycle_counter = 0;
             }
         }
     }
@@ -166,16 +227,67 @@ impl CpuKangarooSolver {
     pub fn total_ops(&self) -> u64 {
         self.ops
     }
+
+    fn bruteforce_fallback(&self) -> Option<Vec<u8>> {
+        if self.range_bits > 24 {
+            return None;
+        }
+
+        let limit = 1u64.checked_shl(self.range_bits)?;
+
+        let mut candidate = self.start;
+        for _ in 0..limit {
+            let key_bytes = candidate.to_bytes();
+            let first_nonzero = key_bytes.iter().position(|&x| x != 0).unwrap_or(31);
+            let trimmed = &key_bytes[first_nonzero..];
+            if crate::crypto::verify_key(trimmed, &self.pubkey) {
+                return Some(trimmed.to_vec());
+            }
+            candidate += Scalar::ONE;
+        }
+
+        None
+    }
 }
 
-fn get_x_low(point: &ProjectivePoint) -> u128 {
-    let affine = point.to_affine();
+fn get_x_low_from_affine(affine: &AffinePoint) -> u128 {
     let encoded = affine.to_encoded_point(false);
     let x_bytes = encoded.x().unwrap();
-    // Get low 128 bits (last 16 bytes)
     let mut low = [0u8; 16];
     low.copy_from_slice(&x_bytes[16..32]);
     u128::from_be_bytes(low)
+}
+
+fn try_four_candidates(
+    mid: Scalar,
+    tame_dist: Scalar,
+    wild_dist: Scalar,
+    pubkey: &ProjectivePoint,
+) -> Option<Vec<u8>> {
+    use crate::crypto::verify_key;
+
+    let neg_mid = Scalar::ZERO - mid;
+    let candidates = [
+        mid + tame_dist - wild_dist,
+        mid - tame_dist - wild_dist,
+        mid + tame_dist + wild_dist,
+        mid - tame_dist + wild_dist,
+        neg_mid + tame_dist - wild_dist,
+        neg_mid - tame_dist - wild_dist,
+        neg_mid + tame_dist + wild_dist,
+        neg_mid - tame_dist + wild_dist,
+    ];
+
+    for key_scalar in &candidates {
+        let key_bytes = key_scalar.to_bytes();
+        let first_nonzero = key_bytes.iter().position(|&x| x != 0).unwrap_or(31);
+        let trimmed = &key_bytes[first_nonzero..];
+        if verify_key(trimmed, pubkey) {
+            return Some(trimmed.to_vec());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
