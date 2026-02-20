@@ -324,14 +324,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
         if (valid) {
             // Check for DP before the jump (on current position)
+            // Do NOT reset cycle counters on DP hit — a cycle that
+            // contains a distinguished point must still be detected.
             if (!dp_stored) {
                 if (is_distinguished(px)) {
                     k.x = px;
                     k.y = py;
                     store_dp(k, kid);
                     dp_stored = true;
-                    k.cycle_counter = 0u;
-                    k.repeat_count = 0u;
                 }
             }
 
@@ -368,8 +368,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                         k.y = py;
                         store_dp(k, kid);
                         dp_stored = true;
-                        k.cycle_counter = 0u;
-                        k.repeat_count = 0u;
                     }
                 }
             }

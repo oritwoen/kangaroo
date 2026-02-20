@@ -167,7 +167,9 @@ impl CpuKangarooSolver {
                 tame_repeat = 0;
             }
 
-            // Check DP
+            // Check DP — do NOT reset cycle counters here; a cycle
+            // that happens to contain a distinguished point must still
+            // be detected and broken by the escape maneuver above.
             if (tame_x & self.dp_mask) == 0 {
                 if let Some(&wild_d) = self.wild_table.get(&tame_x) {
                     tracing::info!("Collision Tame->Wild: x={:x}", tame_x);
@@ -176,8 +178,6 @@ impl CpuKangarooSolver {
                     }
                 }
                 self.tame_table.insert(tame_x, tame_dist_before);
-                tame_cycle_counter = 0;
-                tame_repeat = 0;
             }
 
             // Wild step
@@ -218,7 +218,8 @@ impl CpuKangarooSolver {
                 wild_repeat = 0;
             }
 
-            // Check DP
+            // Check DP — same rationale as tame path: keep cycle
+            // counters running so cycles containing DPs are still caught.
             if (wild_x & self.dp_mask) == 0 {
                 if let Some(&tame_d) = self.tame_table.get(&wild_x) {
                     tracing::info!("Collision Wild->Tame: x={:x}", wild_x);
@@ -227,8 +228,6 @@ impl CpuKangarooSolver {
                     }
                 }
                 self.wild_table.insert(wild_x, wild_dist_before);
-                wild_cycle_counter = 0;
-                wild_repeat = 0;
             }
         }
     }
