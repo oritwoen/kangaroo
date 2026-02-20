@@ -37,7 +37,7 @@ release version:
     git cliff --tag "v$VERSION" -o CHANGELOG.md
     
     echo "Running benchmark..."
-    cargo run --release --all-features -- --benchmark
+    cargo run --release --all-features -- --benchmark --save-benchmarks
     
     git add Cargo.toml Cargo.lock PKGBUILD CHANGELOG.md BENCHMARKS.md
     git commit -m "chore(release): v$VERSION"

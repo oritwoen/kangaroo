@@ -39,7 +39,7 @@ struct CaseResult {
     rate: f64,
 }
 
-pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend) -> Result<()> {
+pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bool) -> Result<()> {
     println!("Kangaroo Benchmark Suite");
     println!("========================\n");
 
@@ -103,9 +103,11 @@ pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend) -> Result<()> {
         });
     }
 
-    let version = env!("CARGO_PKG_VERSION");
-    save_to_file(&device_name, version, &results)?;
-    println!("\nResults saved to BENCHMARKS.md");
+    if save_to_markdown {
+        let version = env!("CARGO_PKG_VERSION");
+        save_to_file(&device_name, version, &results)?;
+        println!("\nResults saved to BENCHMARKS.md");
+    }
 
     Ok(())
 }
@@ -170,12 +172,12 @@ fn format_fresh_file(gpu_section: &str) -> String {
     let mut out = String::new();
     out.push_str("# Benchmark Results\n\n");
     out.push_str("Run benchmarks on your hardware:\n\n");
-    out.push_str("```bash\nkangaroo --benchmark\n```\n\n");
+    out.push_str("```bash\nkangaroo --benchmark --save-benchmarks\n```\n\n");
     out.push_str("## Results\n\n");
     out.push_str(gpu_section);
     out.push_str("\n## Contributing\n\n");
     out.push_str(
-        "Have different hardware? Run `kangaroo --benchmark` and submit a PR with your results!\n",
+        "Have different hardware? Run `kangaroo --benchmark --save-benchmarks` and submit a PR with your results!\n",
     );
     out
 }
