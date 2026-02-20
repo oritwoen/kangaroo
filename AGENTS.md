@@ -68,6 +68,7 @@ kangaroo/
 | `verify_key` | fn | crypto/mod.rs | Check private key matches pubkey |
 | `parse_pubkey` | fn | crypto/mod.rs | Hex string -> Point |
 | `resolve` | fn | provider/mod.rs | Target string -> puzzle params |
+| `compute_candidate_keys` | fn | cpu/dp_table.rs | 4-formula collision candidates for negation map |
 
 ## CONVENTIONS
 
@@ -82,6 +83,8 @@ kangaroo/
 - **Never** use Jacobian coords in final DP storage (must convert to affine)
 - **Never** trust DP buffer count without clamping to MAX_DISTINGUISHED_POINTS
 - **TODO**: Double buffering for async readback not yet implemented (see solver.rs:355)
+- **Never** add `y_parity` or `symClass` to `GpuDistinguishedPoint` (collision resolved by 4-formula CPU-side via `compute_candidate_keys()`)
+- **Never** split jump table for negation map (use add/sub with same 256-entry table)
 
 ## COMMANDS
 
@@ -110,6 +113,7 @@ kangaroo --target boha:b1000/66
 - **DP buffer**: 65,536 max entries, capped at 90% capacity per dispatch
 - **Jump table**: 256 precomputed points, power-of-2 distances
 - **Supported backends**: Vulkan (AMD/NVIDIA/Intel), Metal (Apple), DX12 (Windows)
+- **Negation map**: Y-parity determines jump direction (add/sub). Cycle detection via iteration cap (8192) + repeat counter (threshold 8). ~1.29× practical speedup.
 
 ## TEST STRATEGY
 
@@ -125,3 +129,8 @@ kangaroo --target boha:b1000/66
 - Software renderer fallback (llvmpipe/SwiftShader) detected and warned
 - Progress bar hidden in JSON/quiet mode
 - Hex parsing expects no `0x` prefix for start values
+
+<!-- skilld -->
+Before modifying code, evaluate each installed skill against the current task.
+For each skill, determine YES/NO relevance and invoke all YES skills before proceeding.
+<!-- /skilld -->
