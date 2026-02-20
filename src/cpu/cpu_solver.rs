@@ -169,6 +169,7 @@ impl CpuKangarooSolver {
                 }
                 self.tame_table.insert(tame_x, tame_dist_before);
                 tame_cycle_counter = 0;
+                tame_repeat = 0;
             }
 
             // Wild step
@@ -216,6 +217,7 @@ impl CpuKangarooSolver {
                 }
                 self.wild_table.insert(wild_x, wild_dist_before);
                 wild_cycle_counter = 0;
+                wild_repeat = 0;
             }
         }
     }
