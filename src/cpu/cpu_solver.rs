@@ -2,6 +2,7 @@
 //!
 //! Used for performance comparison with GPU implementation.
 
+use super::dp_table::compute_candidate_scalars;
 use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
 use k256::elliptic_curve::point::AffineCoordinates;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -264,17 +265,7 @@ fn try_candidates(
 ) -> Option<Vec<u8>> {
     use crate::crypto::verify_key;
 
-    let neg_mid = Scalar::ZERO - mid;
-    let candidates = [
-        mid + tame_dist - wild_dist,
-        mid - tame_dist - wild_dist,
-        mid + tame_dist + wild_dist,
-        mid - tame_dist + wild_dist,
-        neg_mid + tame_dist - wild_dist,
-        neg_mid - tame_dist - wild_dist,
-        neg_mid + tame_dist + wild_dist,
-        neg_mid - tame_dist + wild_dist,
-    ];
+    let candidates = compute_candidate_scalars(mid, tame_dist, wild_dist);
 
     for key_scalar in &candidates {
         let key_bytes = key_scalar.to_bytes();
