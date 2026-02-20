@@ -186,7 +186,8 @@ pub fn initialize_kangaroos(
                 is_active: 1,
                 cycle_counter: 0,
                 repeat_count: 0,
-                _padding: [0; 4],
+                last_jump: 0xFFFFFFFF,
+                _padding: [0; 3],
             }
         })
         .collect();

@@ -30,7 +30,8 @@ pub struct GpuKangaroo {
     pub is_active: u32,
     pub cycle_counter: u32,
     pub repeat_count: u32,
-    pub _padding: [u32; 4],
+    pub last_jump: u32,
+    pub _padding: [u32; 3],
 }
 
 #[repr(C)]

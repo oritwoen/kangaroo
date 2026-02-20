@@ -26,7 +26,8 @@ struct Kangaroo {
     is_active: u32,
     cycle_counter: u32,
     repeat_count: u32,
-    _padding: array<u32, 4>
+    last_jump: u32,
+    _padding: array<u32, 3>
 }
 
 const CYCLE_CAP: u32 = 4096u;
@@ -170,6 +171,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 k.cycle_counter = 0u;
                 k.repeat_count = 0u;
             }
+            if (effective_jump_idx == k.last_jump) {
+                effective_jump_idx = (effective_jump_idx + 1u) & 0xFFu;
+            }
+            k.last_jump = effective_jump_idx;
         }
         let jump_idx = effective_jump_idx;
         let jump_point = jump_points[jump_idx];
