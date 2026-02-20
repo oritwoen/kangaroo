@@ -29,7 +29,7 @@ struct Kangaroo {
     _padding: array<u32, 4>
 }
 
-const CYCLE_CAP: u32 = 8192u;
+const CYCLE_CAP: u32 = 4096u;
 const REPEAT_THRESHOLD: u32 = 8u;
 
 struct DistinguishedPoint {
@@ -166,7 +166,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             let in_cycle = (k.cycle_counter > CYCLE_CAP)
                 || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
             if (in_cycle) {
-                effective_jump_idx = (kid ^ (step * 31u) ^ k.cycle_counter) & 0xFFu;
+                effective_jump_idx = (kid + (step * 31u) + k.cycle_counter) & 0xFFu;
                 k.cycle_counter = 0u;
                 k.repeat_count = 0u;
             }
