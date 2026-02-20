@@ -357,12 +357,8 @@ mod tests {
         let le = scalar_to_le_bytes(s);
         let mut result = [0u32; 8];
         for i in 0..8 {
-            result[i] = u32::from_le_bytes([
-                le[i * 4],
-                le[i * 4 + 1],
-                le[i * 4 + 2],
-                le[i * 4 + 3],
-            ]);
+            result[i] =
+                u32::from_le_bytes([le[i * 4], le[i * 4 + 1], le[i * 4 + 2], le[i * 4 + 3]]);
         }
         result
     }
