@@ -24,8 +24,13 @@ struct Kangaroo {
     dist: array<u32, 8>,
     ktype: u32,
     is_active: u32,
-    _padding: array<u32, 6>
+    cycle_counter: u32,
+    repeat_count: u32,
+    _padding: array<u32, 4>
 }
+
+const CYCLE_CAP: u32 = 4096u;
+const REPEAT_THRESHOLD: u32 = 8u;
 
 struct DistinguishedPoint {
     x: array<u32, 8>,
@@ -155,8 +160,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
-        // Select jump based on x coordinate
-        let jump_idx = px[0] & 0xFFu;
+        // Select jump based on x coordinate (with cycle escape perturbation)
+        var effective_jump_idx = px[0] & 0xFFu;
+        if (valid) {
+            let in_cycle = (k.cycle_counter > CYCLE_CAP)
+                || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
+            if (in_cycle) {
+                effective_jump_idx = (kid + (step * 31u) + k.cycle_counter) & 0xFFu;
+                k.cycle_counter = 0u;
+                k.repeat_count = 0u;
+            }
+        }
+        let jump_idx = effective_jump_idx;
         let jump_point = jump_points[jump_idx];
         let jump_dist = jump_distances[jump_idx];
         
@@ -311,35 +326,71 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                     k.y = py;
                     store_dp(k, kid);
                     dp_stored = true;
+                    k.cycle_counter = 0u;
+                    k.repeat_count = 0u;
                 }
             }
 
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
-                // Compute R = P + J (always walk forward to preserve ergodicity)
-                let result_add = affine_add_with_inv(px, py, jump_point.x, jump_point.y, dx_inv);
+                let y_odd = (py[0] & 1u) != 0u;
 
-                // Virtual DP sampling: also check P - J for DP (inverse reuse)
-                // Cost: 2M + 1S, zero additional inversion.
-                // The walk stays at P+J — P-J is only probed, never walked to.
+                // Walk direction depends on y parity (negation map)
+                var walk_y = jump_point.y;
+                if (y_odd) {
+                    walk_y = fe_sub(fe_zero(), jump_point.y);
+                }
+                let result_walk = affine_add_with_inv(px, py, jump_point.x, walk_y, dx_inv);
+
+                // Virtual DP sampling: probe the opposite direction from the walk
                 if (!dp_stored) {
-                    let neg_yj = fe_sub(fe_zero(), jump_point.y);
-                    let result_sub = affine_add_with_inv(px, py, jump_point.x, neg_yj, dx_inv);
+                    var probe_y = jump_point.y;
+                    if (!y_odd) {
+                        probe_y = fe_sub(fe_zero(), jump_point.y);
+                    }
+                    let result_probe = affine_add_with_inv(px, py, jump_point.x, probe_y, dx_inv);
 
-                    if (is_distinguished(result_sub.x)) {
+                    if (is_distinguished(result_probe.x)) {
                         var vk = k;
-                        vk.x = result_sub.x;
-                        vk.y = result_sub.y;
-                        vk.dist = scalar_sub_256(k.dist, jump_dist);
+                        vk.x = result_probe.x;
+                        vk.y = result_probe.y;
+                        if (y_odd) {
+                            vk.dist = scalar_add_256(k.dist, jump_dist);
+                        } else {
+                            vk.dist = scalar_sub_256(k.dist, jump_dist);
+                        }
                         store_dp(vk, kid);
                         dp_stored = true;
                     }
                 }
 
-                // Always walk forward
-                px = result_add.x;
-                py = result_add.y;
-                k.dist = scalar_add_256(k.dist, jump_dist);
+                px = result_walk.x;
+                py = result_walk.y;
+                if (y_odd) {
+                    k.dist = scalar_sub_256(k.dist, jump_dist);
+                } else {
+                    k.dist = scalar_add_256(k.dist, jump_dist);
+                }
+
+                k.cycle_counter = k.cycle_counter + 1u;
+                let new_jump = px[0] & 0xFFu;
+                if (new_jump == (k.repeat_count >> 16u)) {
+                    let cnt = (k.repeat_count & 0xFFFFu) + 1u;
+                    k.repeat_count = (new_jump << 16u) | cnt;
+                } else {
+                    k.repeat_count = (new_jump << 16u) | 1u;
+                }
+
+                if (!dp_stored) {
+                    if (is_distinguished(px)) {
+                        k.x = px;
+                        k.y = py;
+                        store_dp(k, kid);
+                        dp_stored = true;
+                        k.cycle_counter = 0u;
+                        k.repeat_count = 0u;
+                    }
+                }
             }
         }
     }
