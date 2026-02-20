@@ -95,6 +95,10 @@ pub struct Args {
     /// Run benchmark suite and print results
     #[arg(long)]
     benchmark: bool,
+
+    /// Save benchmark results to BENCHMARKS.md (opt-in)
+    #[arg(long)]
+    save_benchmarks: bool,
 }
 
 #[derive(Serialize)]
@@ -334,7 +338,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     if args.benchmark {
-        return benchmark::run(args.gpu, args.backend);
+        return benchmark::run(args.gpu, args.backend, args.save_benchmarks);
     }
 
     let params = resolve_params(&args)?;
