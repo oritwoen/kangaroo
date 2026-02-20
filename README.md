@@ -77,7 +77,8 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `--max-ops` | 0 | Max operations (0 = unlimited) |
 | `--cpu` | false | Use CPU solver instead of GPU |
 | `--json` | false | Output benchmark results in JSON format |
-| `--save-benchmarks` | false | Save benchmark run to `BENCHMARKS.md` (with `--benchmark`) |
+| `--benchmark` | false | Run benchmark suite |
+| `--save-benchmarks` | false | Save benchmark results to `BENCHMARKS.md` when `--benchmark` is used |
 | `--list-providers` | false | List available puzzles from providers |
 
 Either `--target` or `--pubkey` is required.
