@@ -1,6 +1,9 @@
 //! Distinguished Point hash table for collision detection
 
+use crate::crypto::verify_key;
 use crate::gpu::GpuDistinguishedPoint;
+use k256::elliptic_curve::ops::Reduce;
+use k256::{ProjectivePoint, Scalar, U256 as K256U256};
 use std::collections::HashMap;
 
 const MAX_DISTINGUISHED_POINTS: usize = 65_536;
@@ -16,14 +19,16 @@ struct StoredDP {
 pub struct DPTable {
     table: HashMap<u64, Vec<StoredDP>>,
     start: [u8; 32], // search range start for key computation
+    pubkey: ProjectivePoint,
     total_dps: usize,
 }
 
 impl DPTable {
-    pub fn new(start: [u8; 32]) -> Self {
+    pub fn new(start: [u8; 32], pubkey: ProjectivePoint) -> Self {
         Self {
             table: HashMap::new(),
             start,
+            pubkey,
             total_dps: 0,
         }
     }
@@ -87,15 +92,23 @@ impl DPTable {
                     );
                     return None;
                 }
-                let key = compute_private_key(
-                    &self.start,
-                    &existing.dist,
-                    &dist_bytes,
-                    existing.ktype,
-                    dp.ktype,
-                );
-                tracing::info!("Collision found! Key: 0x{}", hex::encode(&key));
-                return Some(key);
+                let (tame_dist_bytes, wild_dist_bytes) = if existing.ktype == 0 {
+                    (existing.dist.as_slice(), dist_bytes.as_ref())
+                } else {
+                    (dist_bytes.as_ref(), existing.dist.as_slice())
+                };
+
+                let candidates =
+                    compute_candidate_keys(&self.start, tame_dist_bytes, wild_dist_bytes);
+                for candidate in &candidates {
+                    if verify_key(candidate, &self.pubkey) {
+                        tracing::info!("Collision found! Key: 0x{}", hex::encode(candidate));
+                        return Some(candidate.clone());
+                    }
+                }
+
+                tracing::debug!("Spurious collision: no candidate key verifies");
+                return None;
             }
             // No collision, add to list
             if self.total_dps >= MAX_DISTINGUISHED_POINTS {
@@ -173,7 +186,8 @@ fn u32_array_to_bytes(arr: &[u32; 8]) -> [u8; 32] {
     bytes
 }
 
-fn compute_private_key(
+#[allow(dead_code)]
+fn compute_private_key_legacy(
     start: &[u8; 32],
     dist1: &[u8],
     dist2: &[u8],
@@ -205,6 +219,57 @@ fn compute_private_key(
     result[first_nonzero..].to_vec()
 }
 
+/// Compute 4 candidate private keys for negation map collision resolution.
+///
+/// When using the negation map, the tame/wild distances can have mixed signs.
+/// We try all 4 combinations of (±tame_dist, ±wild_dist) and verify each.
+///
+/// The canonical formula is: k = start + tame_dist - wild_dist
+/// But with negation map, the actual formula might be any of:
+///   k = start + tame_dist - wild_dist
+///   k = start - tame_dist - wild_dist  (tame walked in negated direction)
+///   k = start + tame_dist + wild_dist  (wild walked in negated direction)
+///   k = start - tame_dist + wild_dist  (both walked in negated direction)
+fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) -> Vec<Vec<u8>> {
+    let start_uint = K256U256::from_le_slice(start);
+    let start_scalar = Scalar::reduce(start_uint);
+
+    let tame_uint = K256U256::from_le_slice(&pad_to_32(tame_dist));
+    let tame_scalar = Scalar::reduce(tame_uint);
+
+    let wild_uint = K256U256::from_le_slice(&pad_to_32(wild_dist));
+    let wild_scalar = Scalar::reduce(wild_uint);
+
+    let mut candidates = Vec::with_capacity(4);
+
+    let k1 = start_scalar + tame_scalar - wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k1));
+
+    let k2 = start_scalar - tame_scalar - wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k2));
+
+    let k3 = start_scalar + tame_scalar + wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k3));
+
+    let k4 = start_scalar - tame_scalar + wild_scalar;
+    candidates.push(scalar_to_key_bytes(&k4));
+
+    candidates
+}
+
+fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    let len = bytes.len().min(32);
+    result[..len].copy_from_slice(&bytes[..len]);
+    result
+}
+
+fn scalar_to_key_bytes(scalar: &Scalar) -> Vec<u8> {
+    let bytes = scalar.to_bytes();
+    let first_nonzero = bytes.iter().position(|&x| x != 0).unwrap_or(31);
+    bytes[first_nonzero..].to_vec()
+}
+
 fn add_256(a: &[u8], b: &[u8], result: &mut [u8]) {
     let mut carry = 0u16;
     for i in 0..32 {
@@ -233,6 +298,7 @@ mod tests {
     use super::DPTable;
     use super::MAX_DISTINGUISHED_POINTS;
     use crate::gpu::GpuDistinguishedPoint;
+    use k256::ProjectivePoint;
 
     fn make_dp(x: u32, dist: u32, ktype: u32) -> GpuDistinguishedPoint {
         let mut x_words = [0u32; 8];
@@ -252,7 +318,7 @@ mod tests {
 
     #[test]
     fn insert_and_check_caps_at_maximum() {
-        let mut table = DPTable::new([0u8; 32]);
+        let mut table = DPTable::new([0u8; 32], ProjectivePoint::GENERATOR);
 
         for i in 0..MAX_DISTINGUISHED_POINTS {
             let dp = make_dp(i as u32, i as u32, 0);
