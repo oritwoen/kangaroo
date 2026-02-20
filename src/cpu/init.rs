@@ -184,7 +184,9 @@ pub fn initialize_kangaroos(
                 dist,
                 ktype: if is_tame { 0 } else { 1 },
                 is_active: 1,
-                _padding: [0; 6],
+                cycle_counter: 0,
+                repeat_count: 0,
+                _padding: [0; 4],
             }
         })
         .collect();

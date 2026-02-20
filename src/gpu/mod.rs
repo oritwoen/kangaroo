@@ -28,7 +28,9 @@ pub struct GpuKangaroo {
     pub dist: [u32; 8],
     pub ktype: u32,
     pub is_active: u32,
-    pub _padding: [u32; 6],
+    pub cycle_counter: u32,
+    pub repeat_count: u32,
+    pub _padding: [u32; 4],
 }
 
 #[repr(C)]
@@ -40,3 +42,5 @@ pub struct GpuDistinguishedPoint {
     pub kangaroo_id: u32,
     pub _padding: [u32; 6],
 }
+
+const _: [(); 128] = [(); core::mem::size_of::<GpuKangaroo>()];
