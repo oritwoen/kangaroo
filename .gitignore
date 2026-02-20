@@ -2,3 +2,9 @@
 /pkg
 /src/kangaroo-*/
 /.sisyphus/
+
+# Skilld references (recreated by `skilld install`)
+.skilld
+
+# Auto-generated benchmark output
+BENCHMARKS.md
