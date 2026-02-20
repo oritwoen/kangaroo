@@ -349,21 +349,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                 }
                 let result_walk = affine_add_with_inv(px, repr_y, jump_point.x, jump_point.y, dx_inv);
 
-                // Virtual DP sampling: probe the opposite direction from the walk
-                if (!dp_stored) {
-                    let probe_y = fe_sub(fe_zero(), jump_point.y);
-                    let result_probe = affine_add_with_inv(px, repr_y, jump_point.x, probe_y, dx_inv);
-
-                    if (is_distinguished(result_probe.x)) {
-                        var vk = k;
-                        vk.x = result_probe.x;
-                        vk.y = result_probe.y;
-                        vk.dist = scalar_sub_256(repr_dist, jump_dist);
-                        store_dp(vk, kid);
-                        dp_stored = true;
-                    }
-                }
-
                 px = result_walk.x;
                 py = result_walk.y;
                 k.dist = scalar_add_256(repr_dist, jump_dist);
