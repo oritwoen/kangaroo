@@ -86,8 +86,7 @@ impl CpuKangarooSolver {
 
         let mut tame_cycle_counter: u32 = 0;
         let mut wild_cycle_counter: u32 = 0;
-        let mut tame_last_jump: usize = 16;
-        let mut wild_last_jump: usize = 16;
+        // Point-based repeat tracking: packed format (x_low << 16 | count)
         let mut tame_repeat: u32 = 0;
         let mut wild_repeat: u32 = 0;
 
@@ -136,23 +135,27 @@ impl CpuKangarooSolver {
             let tame_dist_before = tame_dist;
             let jump_idx = (tame_x & 15) as usize;
             let y_is_odd: bool = bool::from(tame_affine.y_is_odd());
+            // Normalized representative walk: walk on even-y representative
+            // If y_odd: representative = -P, repr_dist = -dist
+            // After adding jump: new_dist = repr_dist + jump_dist = -dist + jump_dist = jump_dist - dist
             if y_is_odd {
-                tame_pos -= jump_points[jump_idx];
-                tame_dist -= jump_distances[jump_idx];
+                tame_pos = -tame_pos + jump_points[jump_idx]; // -P + J
+                tame_dist = jump_distances[jump_idx] - tame_dist; // jump_dist - dist
             } else {
-                tame_pos += jump_points[jump_idx];
-                tame_dist += jump_distances[jump_idx];
+                tame_pos += jump_points[jump_idx]; // P + J
+                tame_dist += jump_distances[jump_idx]; // dist + jump_dist
             }
             self.ops += 1;
 
             tame_cycle_counter += 1;
-            if jump_idx == tame_last_jump {
-                tame_repeat += 1;
+            // Point-based repeat tracking: track x-coordinate low bits, not jump index
+            let tame_x_low = (tame_x & 0xFFFF) as u32;
+            if tame_x_low == (tame_repeat >> 16) {
+                tame_repeat = (tame_x_low << 16) | ((tame_repeat & 0xFFFF) + 1);
             } else {
-                tame_repeat = 0;
+                tame_repeat = (tame_x_low << 16) | 1;
             }
-            tame_last_jump = jump_idx;
-            if tame_cycle_counter > 1024 || tame_repeat > 4 {
+            if tame_cycle_counter > 1024 || (tame_repeat & 0xFFFF) > 3 {
                 let escape_idx = ((tame_cycle_counter as usize)
                     .wrapping_mul(31)
                     .wrapping_add(jump_idx)
@@ -162,7 +165,6 @@ impl CpuKangarooSolver {
                 tame_dist += jump_distances[escape_idx];
                 tame_cycle_counter = 0;
                 tame_repeat = 0;
-                tame_last_jump = escape_idx;
             }
 
             // Check DP
@@ -184,23 +186,27 @@ impl CpuKangarooSolver {
             let wild_dist_before = wild_dist;
             let jump_idx = (wild_x & 15) as usize;
             let y_is_odd: bool = bool::from(wild_affine.y_is_odd());
+            // Normalized representative walk: walk on even-y representative
+            // If y_odd: representative = -P, repr_dist = -dist
+            // After adding jump: new_dist = repr_dist + jump_dist = -dist + jump_dist = jump_dist - dist
             if y_is_odd {
-                wild_pos -= jump_points[jump_idx];
-                wild_dist -= jump_distances[jump_idx];
+                wild_pos = -wild_pos + jump_points[jump_idx]; // -P + J
+                wild_dist = jump_distances[jump_idx] - wild_dist; // jump_dist - dist
             } else {
-                wild_pos += jump_points[jump_idx];
-                wild_dist += jump_distances[jump_idx];
+                wild_pos += jump_points[jump_idx]; // P + J
+                wild_dist += jump_distances[jump_idx]; // dist + jump_dist
             }
             self.ops += 1;
 
             wild_cycle_counter += 1;
-            if jump_idx == wild_last_jump {
-                wild_repeat += 1;
+            // Point-based repeat tracking: track x-coordinate low bits, not jump index
+            let wild_x_low = (wild_x & 0xFFFF) as u32;
+            if wild_x_low == (wild_repeat >> 16) {
+                wild_repeat = (wild_x_low << 16) | ((wild_repeat & 0xFFFF) + 1);
             } else {
-                wild_repeat = 0;
+                wild_repeat = (wild_x_low << 16) | 1;
             }
-            wild_last_jump = jump_idx;
-            if wild_cycle_counter > 1024 || wild_repeat > 4 {
+            if wild_cycle_counter > 1024 || (wild_repeat & 0xFFFF) > 3 {
                 let escape_idx = ((wild_cycle_counter as usize)
                     .wrapping_mul(31)
                     .wrapping_add(jump_idx)
@@ -210,7 +216,6 @@ impl CpuKangarooSolver {
                 wild_dist += jump_distances[escape_idx];
                 wild_cycle_counter = 0;
                 wild_repeat = 0;
-                wild_last_jump = escape_idx;
             }
 
             // Check DP
