@@ -368,6 +368,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
         let dp_bits = args
             .dp_bits
+            .map(|v| v.clamp(8, 20))
             .unwrap_or_else(|| (range_bits / 2).saturating_sub(2).clamp(8, 20));
 
         if !args.quiet && !args.json {
@@ -454,7 +455,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     let num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
-    let dp_bits = args.dp_bits.unwrap_or_else(|| {
+    let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
         let auto_dp = (range_bits / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
         auto_dp.clamp(8, 40)
     });

@@ -48,6 +48,11 @@ pub struct KangarooSolver {
 }
 
 impl KangarooSolver {
+    fn cycle_cap_for(dp_bits: u32) -> u32 {
+        let exp = (dp_bits / 2).min(31);
+        512u32.max(2u32.pow(exp))
+    }
+
     pub fn new(
         ctx: GpuContext,
         pubkey: Point,
@@ -147,7 +152,7 @@ impl KangarooSolver {
             MAX_DISTINGUISHED_POINTS,
         );
 
-        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
+        let cycle_cap = Self::cycle_cap_for(dp_bits);
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
@@ -238,7 +243,7 @@ impl KangarooSolver {
             MAX_DISTINGUISHED_POINTS,
         );
 
-        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
+        let cycle_cap = Self::cycle_cap_for(dp_bits);
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
@@ -286,7 +291,7 @@ impl KangarooSolver {
         solver.calibrate(dp_bits, verbose);
 
         // Update config buffer with calibrated value and correct DP mask
-        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
+        let cycle_cap = Self::cycle_cap_for(dp_bits);
         let final_config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
