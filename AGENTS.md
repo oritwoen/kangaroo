@@ -113,7 +113,7 @@ kangaroo --target boha:b1000/66
 - **DP buffer**: 65,536 max entries, capped at 90% capacity per dispatch
 - **Jump table**: 256 precomputed points, power-of-2 distances
 - **Supported backends**: Vulkan (AMD/NVIDIA/Intel), Metal (Apple), DX12 (Windows)
-- **Negation map**: Y-parity determines jump direction (add/sub). Cycle detection via iteration cap (8192) + repeat counter (threshold 8). ~1.29× practical speedup.
+- **Negation map**: Y-parity determines jump direction (add/sub). Cycle detection via iteration cap (4096) + repeat counter (threshold 8). ~1.29× practical speedup.
 
 ## TEST STRATEGY
 
