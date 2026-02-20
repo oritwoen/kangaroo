@@ -158,6 +158,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     // Track if we already stored a DP this batch
     var dp_stored = false;
 
+    let scalar_zero = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
         // Select jump based on x coordinate (with cycle escape perturbation)
@@ -338,7 +340,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
                 let y_odd = (py[0] & 1u) != 0u;
-                let scalar_zero = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
 
                 // Normalize to class representative before the walk: {P, -P} -> even-y representative
                 var repr_y = py;

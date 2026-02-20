@@ -86,9 +86,10 @@ impl CpuKangarooSolver {
 
         let mut tame_cycle_counter: u32 = 0;
         let mut wild_cycle_counter: u32 = 0;
-        // Point-based repeat tracking: packed format (x_low << 16 | count)
         let mut tame_repeat: u32 = 0;
         let mut wild_repeat: u32 = 0;
+        let mut tame_last_jump: usize = usize::MAX;
+        let mut wild_last_jump: usize = usize::MAX;
 
         // Jump table (Scalar distances)
         let jump_distances: Vec<Scalar> = (0..16)
@@ -133,23 +134,24 @@ impl CpuKangarooSolver {
             let tame_affine = tame_pos.to_affine();
             let tame_x = get_x_low_from_affine(&tame_affine);
             let tame_dist_before = tame_dist;
-            let jump_idx = (tame_x & 15) as usize;
+            let mut jump_idx = (tame_x & 15) as usize;
+            if jump_idx == tame_last_jump {
+                jump_idx = (jump_idx + 1) & 15;
+            }
+            tame_last_jump = jump_idx;
             let y_is_odd: bool = bool::from(tame_affine.y_is_odd());
-            // Normalized representative walk: walk on even-y representative
-            // If y_odd: representative = -P, repr_dist = -dist
-            // After adding jump: new_dist = repr_dist + jump_dist = -dist + jump_dist = jump_dist - dist
             if y_is_odd {
-                tame_pos = -tame_pos + jump_points[jump_idx]; // -P + J
-                tame_dist = jump_distances[jump_idx] - tame_dist; // jump_dist - dist
+                tame_pos = -tame_pos + jump_points[jump_idx];
+                tame_dist = jump_distances[jump_idx] - tame_dist;
             } else {
-                tame_pos += jump_points[jump_idx]; // P + J
-                tame_dist += jump_distances[jump_idx]; // dist + jump_dist
+                tame_pos += jump_points[jump_idx];
+                tame_dist += jump_distances[jump_idx];
             }
             self.ops += 1;
 
             tame_cycle_counter += 1;
-            // Point-based repeat tracking: track x-coordinate low bits, not jump index
-            let tame_x_low = (tame_x & 0xFFFF) as u32;
+            let tame_new_x = get_x_low_from_affine(&tame_pos.to_affine());
+            let tame_x_low = (tame_new_x & 0xFFFF) as u32;
             if tame_x_low == (tame_repeat >> 16) {
                 tame_repeat = (tame_x_low << 16) | ((tame_repeat & 0xFFFF) + 1);
             } else {
@@ -184,23 +186,24 @@ impl CpuKangarooSolver {
             let wild_affine = wild_pos.to_affine();
             let wild_x = get_x_low_from_affine(&wild_affine);
             let wild_dist_before = wild_dist;
-            let jump_idx = (wild_x & 15) as usize;
+            let mut jump_idx = (wild_x & 15) as usize;
+            if jump_idx == wild_last_jump {
+                jump_idx = (jump_idx + 1) & 15;
+            }
+            wild_last_jump = jump_idx;
             let y_is_odd: bool = bool::from(wild_affine.y_is_odd());
-            // Normalized representative walk: walk on even-y representative
-            // If y_odd: representative = -P, repr_dist = -dist
-            // After adding jump: new_dist = repr_dist + jump_dist = -dist + jump_dist = jump_dist - dist
             if y_is_odd {
-                wild_pos = -wild_pos + jump_points[jump_idx]; // -P + J
-                wild_dist = jump_distances[jump_idx] - wild_dist; // jump_dist - dist
+                wild_pos = -wild_pos + jump_points[jump_idx];
+                wild_dist = jump_distances[jump_idx] - wild_dist;
             } else {
-                wild_pos += jump_points[jump_idx]; // P + J
-                wild_dist += jump_distances[jump_idx]; // dist + jump_dist
+                wild_pos += jump_points[jump_idx];
+                wild_dist += jump_distances[jump_idx];
             }
             self.ops += 1;
 
             wild_cycle_counter += 1;
-            // Point-based repeat tracking: track x-coordinate low bits, not jump index
-            let wild_x_low = (wild_x & 0xFFFF) as u32;
+            let wild_new_x = get_x_low_from_affine(&wild_pos.to_affine());
+            let wild_x_low = (wild_new_x & 0xFFFF) as u32;
             if wild_x_low == (wild_repeat >> 16) {
                 wild_repeat = (wild_x_low << 16) | ((wild_repeat & 0xFFFF) + 1);
             } else {
