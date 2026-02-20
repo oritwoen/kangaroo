@@ -241,13 +241,16 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
     let start_uint = K256U256::from_le_slice(start);
     let start_scalar = Scalar::reduce(start_uint);
 
-    let tame_scalar = distance_to_scalar(&pad_to_32(tame_dist));
-    let wild_scalar = distance_to_scalar(&pad_to_32(wild_dist));
+    let tame_pair = distance_scalar_pair(&pad_to_32(tame_dist));
+    let wild_pair = distance_scalar_pair(&pad_to_32(wild_dist));
 
-    let candidates = compute_candidate_scalars(start_scalar, tame_scalar, wild_scalar);
-    let mut keys = Vec::with_capacity(8);
-    for candidate in &candidates {
-        keys.push(scalar_to_key_bytes(candidate));
+    let mut keys = Vec::with_capacity(32);
+    for &td in &tame_pair {
+        for &wd in &wild_pair {
+            for candidate in &compute_candidate_scalars(start_scalar, td, wd) {
+                keys.push(scalar_to_key_bytes(candidate));
+            }
+        }
     }
     keys
 }
@@ -259,31 +262,24 @@ fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
     result
 }
 
-/// Convert GPU unsigned 256-bit distance to scalar field element.
+/// Two scalar interpretations of a GPU distance: direct and negated.
 ///
-/// GPU distances use unsigned 256-bit wrapping arithmetic (mod 2^256).
-/// When a distance goes negative (kangaroo walks backward past zero),
-/// the GPU produces `2^256 - d`. Using `Scalar::reduce` directly on this
-/// gives `(2^256 - d) mod n`, which differs from the correct `-d mod n = n - d`
-/// by a constant `c = 2^256 mod n ≈ 4.3 × 10^38`.
+/// GPU distances use unsigned 256-bit wrapping (mod 2^256), but we need
+/// mod n scalars. We can't distinguish a positive distance from a wrapped
+/// negative without extra metadata, so we return both interpretations and
+/// let candidate key verification determine which is correct.
 ///
-/// We interpret the 256-bit value as signed (two's complement) via bit 255:
-/// - If bit 255 is clear: positive distance, use `Scalar::reduce` directly
-/// - If bit 255 is set: negative distance, negate to get `d`, then return `n - d`
-///
-/// This is correct for all practical distances where `|d| < 2^255`.
-fn distance_to_scalar(dist_le_bytes: &[u8; 32]) -> Scalar {
-    let is_negative = dist_le_bytes[31] & 0x80 != 0;
+/// - `[0]` = `Scalar::reduce(v)` — correct when distance didn't wrap
+/// - `[1]` = `-(Scalar::reduce(2^256 - v))` — correct when distance wrapped negative
+fn distance_scalar_pair(dist_le_bytes: &[u8; 32]) -> [Scalar; 2] {
+    let uint = K256U256::from_le_slice(dist_le_bytes);
+    let direct = <Scalar as Reduce<K256U256>>::reduce(uint);
 
-    if is_negative {
-        // Two's complement negation: d = 2^256 - stored
-        let pos_bytes = negate_u256_bytes(dist_le_bytes);
-        let pos_uint = K256U256::from_le_slice(&pos_bytes);
-        Scalar::ZERO - <Scalar as Reduce<K256U256>>::reduce(pos_uint)
-    } else {
-        let uint = K256U256::from_le_slice(dist_le_bytes);
-        <Scalar as Reduce<K256U256>>::reduce(uint)
-    }
+    let neg_bytes = negate_u256_bytes(dist_le_bytes);
+    let neg_uint = K256U256::from_le_slice(&neg_bytes);
+    let negated = Scalar::ZERO - <Scalar as Reduce<K256U256>>::reduce(neg_uint);
+
+    [direct, negated]
 }
 
 /// Two's complement negation of a 256-bit LE value: returns `2^256 - value`.
@@ -902,28 +898,27 @@ mod tests {
     }
 
     #[test]
-    fn test_distance_to_scalar_unit() {
-        // Positive distance: 42
+    fn test_distance_scalar_pair_unit() {
+        // Zero: both interpretations give Scalar::ZERO
+        let zero = [0u8; 32];
+        let pair = super::distance_scalar_pair(&zero);
+        assert_eq!(pair[0], Scalar::ZERO);
+        assert_eq!(pair[1], Scalar::ZERO);
+
+        // Positive 42: direct = 42, negated ≠ 42
         let mut pos_le = [0u8; 32];
         pos_le[0] = 42;
-        let s = super::distance_to_scalar(&pos_le);
-        assert_eq!(s, scalar_from_u64(42));
+        let pair = super::distance_scalar_pair(&pos_le);
+        assert_eq!(pair[0], scalar_from_u64(42));
+        assert_ne!(pair[1], scalar_from_u64(42));
 
-        // Negative distance: 2^256 - 1 (GPU repr of -1) → should give n - 1
-        let neg_one = [0xFFu8; 32];
-        let s = super::distance_to_scalar(&neg_one);
-        assert_eq!(s, Scalar::ZERO - scalar_from_u64(1));
-
-        // Negative distance: 2^256 - 10 → should give n - 10
+        // GPU wrapped -10 (2^256 - 10): negated interpretation = n - 10
         let mut neg_ten = [0xFFu8; 32];
         neg_ten[0] = 0xF6;
-        let s = super::distance_to_scalar(&neg_ten);
-        assert_eq!(s, Scalar::ZERO - scalar_from_u64(10));
-
-        // Zero distance
-        let zero = [0u8; 32];
-        let s = super::distance_to_scalar(&zero);
-        assert_eq!(s, Scalar::ZERO);
+        let pair = super::distance_scalar_pair(&neg_ten);
+        let expected_neg = Scalar::ZERO - scalar_from_u64(10);
+        assert_ne!(pair[0], expected_neg); // direct gives wrong result for wrapped
+        assert_eq!(pair[1], expected_neg); // negated gives correct n - 10
     }
 
     #[test]
