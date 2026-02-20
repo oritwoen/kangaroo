@@ -338,31 +338,27 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
                 let y_odd = (py[0] & 1u) != 0u;
+                let scalar_zero = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
 
-                // Walk direction depends on y parity (negation map)
-                var walk_y = jump_point.y;
+                // Normalize to class representative before the walk: {P, -P} -> even-y representative
+                var repr_y = py;
+                var repr_dist = k.dist;
                 if (y_odd) {
-                    walk_y = fe_sub(fe_zero(), jump_point.y);
+                    repr_y = fe_sub(fe_zero(), py);
+                    repr_dist = scalar_sub_256(scalar_zero, k.dist);
                 }
-                let result_walk = affine_add_with_inv(px, py, jump_point.x, walk_y, dx_inv);
+                let result_walk = affine_add_with_inv(px, repr_y, jump_point.x, jump_point.y, dx_inv);
 
                 // Virtual DP sampling: probe the opposite direction from the walk
                 if (!dp_stored) {
-                    var probe_y = jump_point.y;
-                    if (!y_odd) {
-                        probe_y = fe_sub(fe_zero(), jump_point.y);
-                    }
-                    let result_probe = affine_add_with_inv(px, py, jump_point.x, probe_y, dx_inv);
+                    let probe_y = fe_sub(fe_zero(), jump_point.y);
+                    let result_probe = affine_add_with_inv(px, repr_y, jump_point.x, probe_y, dx_inv);
 
                     if (is_distinguished(result_probe.x)) {
                         var vk = k;
                         vk.x = result_probe.x;
                         vk.y = result_probe.y;
-                        if (y_odd) {
-                            vk.dist = scalar_add_256(k.dist, jump_dist);
-                        } else {
-                            vk.dist = scalar_sub_256(k.dist, jump_dist);
-                        }
+                        vk.dist = scalar_sub_256(repr_dist, jump_dist);
                         store_dp(vk, kid);
                         dp_stored = true;
                     }
@@ -370,11 +366,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
                 px = result_walk.x;
                 py = result_walk.y;
-                if (y_odd) {
-                    k.dist = scalar_sub_256(k.dist, jump_dist);
-                } else {
-                    k.dist = scalar_add_256(k.dist, jump_dist);
-                }
+                k.dist = scalar_add_256(repr_dist, jump_dist);
 
                 k.cycle_counter = k.cycle_counter + 1u;
                 let new_jump = px[0] & 0xFFFFu;
