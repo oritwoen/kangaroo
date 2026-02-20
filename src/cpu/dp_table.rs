@@ -297,8 +297,11 @@ fn subtract_256(a: &[u8], b: &[u8], result: &mut [u8]) {
 mod tests {
     use super::DPTable;
     use super::MAX_DISTINGUISHED_POINTS;
+    use crate::crypto::verify_key;
     use crate::gpu::GpuDistinguishedPoint;
-    use k256::ProjectivePoint;
+    use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use k256::{ProjectivePoint, Scalar, U256 as K256U256};
 
     fn make_dp(x: u32, dist: u32, ktype: u32) -> GpuDistinguishedPoint {
         let mut x_words = [0u32; 8];
@@ -330,5 +333,237 @@ mod tests {
         let overflow_dp = make_dp(u32::MAX, u32::MAX, 1);
         assert!(table.insert_and_check(overflow_dp).is_none());
         assert_eq!(table.total_dps(), MAX_DISTINGUISHED_POINTS);
+    }
+
+    // --- Helpers for crypto-aware DP tests ---
+
+    fn scalar_from_u64(val: u64) -> Scalar {
+        let mut le_bytes = [0u8; 32];
+        le_bytes[..8].copy_from_slice(&val.to_le_bytes());
+        let uint = K256U256::from_le_slice(&le_bytes);
+        <Scalar as Reduce<K256U256>>::reduce(uint)
+    }
+
+    fn scalar_to_le_bytes(s: &Scalar) -> [u8; 32] {
+        let be = s.to_bytes();
+        let mut le = [0u8; 32];
+        for i in 0..32 {
+            le[i] = be[31 - i];
+        }
+        le
+    }
+
+    fn scalar_to_dist_u32(s: &Scalar) -> [u32; 8] {
+        let le = scalar_to_le_bytes(s);
+        let mut result = [0u32; 8];
+        for i in 0..8 {
+            result[i] = u32::from_le_bytes([
+                le[i * 4],
+                le[i * 4 + 1],
+                le[i * 4 + 2],
+                le[i * 4 + 3],
+            ]);
+        }
+        result
+    }
+
+    fn point_to_x_u32(p: &ProjectivePoint) -> [u32; 8] {
+        let affine = p.to_affine();
+        let encoded = affine.to_encoded_point(false);
+        let x_bytes = encoded.x().unwrap();
+        let mut result = [0u32; 8];
+        for i in 0..8 {
+            result[7 - i] = u32::from_be_bytes([
+                x_bytes[i * 4],
+                x_bytes[i * 4 + 1],
+                x_bytes[i * 4 + 2],
+                x_bytes[i * 4 + 3],
+            ]);
+        }
+        result
+    }
+
+    fn make_real_dp(
+        collision_point: &ProjectivePoint,
+        dist: &Scalar,
+        ktype: u32,
+    ) -> GpuDistinguishedPoint {
+        GpuDistinguishedPoint {
+            x: point_to_x_u32(collision_point),
+            dist: scalar_to_dist_u32(dist),
+            ktype,
+            kangaroo_id: 0,
+            _padding: [0u32; 6],
+        }
+    }
+
+    // --- Four-formula collision tests ---
+
+    #[test]
+    fn test_four_formula_collision_case1() {
+        // Formula: k = start + tame_dist - wild_dist
+        // k=66, start=50, tame_dist=30, wild_dist=14 → 50+30-14=66 ✓
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(50);
+        let tame_dist = scalar_from_u64(30);
+        let wild_dist = scalar_from_u64(14);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Collision: tame lands at (start+tame_dist)*G, wild at (k+wild_dist)*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(k + wild_dist))
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should find key via k = start + tame_dist - wild_dist"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_four_formula_collision_case2() {
+        // Formula: k = start - tame_dist - wild_dist (tame negated)
+        // k=66, start=100, tame_dist=20, wild_dist=14 → 100-20-14=66 ✓
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(100);
+        let tame_dist = scalar_from_u64(20);
+        let wild_dist = scalar_from_u64(14);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Tame walked negated: (start-tame_dist)*G = 80*G
+        // Wild walked normal: (k+wild_dist)*G = 80*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(k + wild_dist))
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should find key via k = start - tame_dist - wild_dist"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_four_formula_collision_case3() {
+        // Formula: k = start + tame_dist + wild_dist (wild negated)
+        // k=66, start=30, tame_dist=20, wild_dist=16 → 30+20+16=66 ✓
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(30);
+        let tame_dist = scalar_from_u64(20);
+        let wild_dist = scalar_from_u64(16);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Tame walked normal: (start+tame_dist)*G = 50*G
+        // Wild walked negated: (k-wild_dist)*G = 50*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(k - wild_dist))
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should find key via k = start + tame_dist + wild_dist"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_signed_distance_wrapping() {
+        // Large distance near 2^256 representing negative offset.
+        // tame_dist = n-10 (huge LE repr, acts as -10 in scalar arithmetic)
+        // Formula 1: k = start + tame_dist - wild_dist
+        //              = 100 + (n-10) - 24 = 100 - 10 - 24 = 66 (mod n) ✓
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(100);
+        let tame_dist = Scalar::ZERO - scalar_from_u64(10); // n - 10
+        let wild_dist = scalar_from_u64(24);
+
+        // Verify the scalar arithmetic resolves correctly
+        assert_eq!(start_s + tame_dist - wild_dist, k);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Collision at (start + tame_dist)*G = (100-10)*G = 90*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&scalar_from_u64(90))
+        );
+
+        // Verify tame_dist LE bytes are indeed large (near 2^256)
+        let tame_le = scalar_to_le_bytes(&tame_dist);
+        assert!(
+            tame_le[31] > 0xF0,
+            "tame_dist LE repr should have large high byte, got {:#x}",
+            tame_le[31]
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should resolve collision with large wrapped distance"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
+    fn test_four_formula_no_false_match() {
+        // Collision with wrong pubkey — no formula produces a valid key.
+        let wrong_pubkey = ProjectivePoint::mul_by_generator(&scalar_from_u64(999));
+
+        let start_s = scalar_from_u64(50);
+        let tame_dist = scalar_from_u64(30);
+        let wild_dist = scalar_from_u64(14);
+
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, wrong_pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_none(),
+            "Should return None when no formula produces valid key"
+        );
     }
 }
