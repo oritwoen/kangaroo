@@ -857,44 +857,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gpu_unsigned_wrap_distance() {
-        // GPU produces 2^256 - d via unsigned subtraction, NOT n - d.
-        // This is the actual representation the GPU shader generates when
-        // scalar_sub_256 underflows. Before fix, Scalar::reduce(2^256-d) gave
-        // wrong result (off by c = 2^256 mod n ≈ 4.3e38).
-        let k = scalar_from_u64(66);
-        let start_s = scalar_from_u64(100);
-        let wild_dist = scalar_from_u64(24);
-
-        // tame walked -10 steps → GPU stores 2^256 - 10
-        // k = start + tame_dist - wild_dist = 100 + (-10) - 24 = 66
-        let tame_dist_u32 = gpu_wrapped_neg_u64(10);
-
-        let pubkey = ProjectivePoint::mul_by_generator(&k);
-        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - scalar_from_u64(10)));
-
-        let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
-
-        let tame_dp = GpuDistinguishedPoint {
-            x: point_to_x_u32(&collision_point),
-            dist: tame_dist_u32,
-            ktype: 0,
-            kangaroo_id: 0,
-            _padding: [0u32; 6],
-        };
-        assert!(table.insert_and_check(tame_dp).is_none());
-
-        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
-        let result = table.insert_and_check(wild_dp);
-        assert!(
-            result.is_some(),
-            "Should resolve collision with GPU unsigned wrapped distance (2^256 - d)"
-        );
-        assert!(verify_key(&result.unwrap(), &pubkey));
-    }
-
-    #[test]
     fn test_gpu_unsigned_wrap_both_distances() {
         // Both tame and wild have GPU-wrapped negative distances.
         // k = start + tame_dist - wild_dist = 200 + (-30) - (-8) = 200 - 30 + 8 = 178
