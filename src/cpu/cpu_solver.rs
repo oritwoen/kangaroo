@@ -163,9 +163,7 @@ impl CpuKangarooSolver {
             if (tame_x & self.dp_mask) == 0 {
                 if let Some(&wild_d) = self.wild_table.get(&tame_x) {
                     tracing::info!("Collision Tame->Wild: x={:x}", tame_x);
-                    if let Some(key) =
-                        try_four_candidates(mid, tame_dist_before, wild_d, &self.pubkey)
-                    {
+                    if let Some(key) = try_candidates(mid, tame_dist_before, wild_d, &self.pubkey) {
                         return Some(key);
                     }
                 }
@@ -212,9 +210,7 @@ impl CpuKangarooSolver {
             if (wild_x & self.dp_mask) == 0 {
                 if let Some(&tame_d) = self.tame_table.get(&wild_x) {
                     tracing::info!("Collision Wild->Tame: x={:x}", wild_x);
-                    if let Some(key) =
-                        try_four_candidates(mid, tame_d, wild_dist_before, &self.pubkey)
-                    {
+                    if let Some(key) = try_candidates(mid, tame_d, wild_dist_before, &self.pubkey) {
                         return Some(key);
                     }
                 }
@@ -258,7 +254,7 @@ fn get_x_low_from_affine(affine: &AffinePoint) -> u128 {
     u128::from_be_bytes(low)
 }
 
-fn try_four_candidates(
+fn try_candidates(
     mid: Scalar,
     tame_dist: Scalar,
     wild_dist: Scalar,
