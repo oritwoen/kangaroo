@@ -327,6 +327,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                     store_dp(k, kid);
                     dp_stored = true;
                     k.cycle_counter = 0u;
+                    k.repeat_count = 0u;
                 }
             }
 
@@ -387,6 +388,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                         store_dp(k, kid);
                         dp_stored = true;
                         k.cycle_counter = 0u;
+                        k.repeat_count = 0u;
                     }
                 }
             }
