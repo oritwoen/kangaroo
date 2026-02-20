@@ -3,7 +3,7 @@
 Run benchmarks on your hardware:
 
 ```bash
-kangaroo --benchmark --save-benchmarks
+kangaroo --benchmark
 ```
 
 ## Results
@@ -39,4 +39,4 @@ kangaroo --benchmark --save-benchmarks
 
 ## Contributing
 
-Have different hardware? Run `kangaroo --benchmark --save-benchmarks` and submit a PR with your results!
+Have different hardware? Run `kangaroo --benchmark` and submit a PR with your results!
