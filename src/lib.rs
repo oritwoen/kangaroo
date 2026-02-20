@@ -116,6 +116,7 @@ struct Metadata {
     algorithm: String,
     total_ops: u64,
     time_seconds: f64,
+    k_factor: f64,
 }
 
 pub fn run_from_args<I, S>(args: I) -> anyhow::Result<()>
@@ -405,6 +406,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 let total_ops = solver.total_ops();
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
+                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -416,6 +418,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
+                        k_factor,
                     },
                 };
                 println!("{}", serde_json::to_string(&result)?);
@@ -426,6 +429,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Verification: SUCCESS");
                 info!("Total operations: {}", solver.total_ops());
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
+                info!("K-factor: {:.3}", solver.total_ops() as f64 / (2.0_f64).powf(range_bits as f64 / 2.0));
             }
 
             if let Some(ref output) = args.output {
@@ -505,6 +509,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             if args.json {
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
+                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -516,6 +521,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
+                        k_factor,
                     },
                 };
                 println!("{}", serde_json::to_string(&result)?);
@@ -526,6 +532,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Verification: SUCCESS");
                 info!("Total operations: {}", total_ops);
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
+                info!("K-factor: {:.3}", total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0));
             }
 
             if let Some(ref output) = args.output {
