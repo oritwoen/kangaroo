@@ -498,6 +498,39 @@ mod tests {
     }
 
     #[test]
+    fn test_four_formula_collision_case4() {
+        // Formula: k = start - tame_dist + wild_dist (tame negated, wild negated)
+        // k=66, start=80, tame_dist=30, wild_dist=16 → 80-30+16=66 ✓
+        let k = scalar_from_u64(66);
+        let start_s = scalar_from_u64(80);
+        let tame_dist = scalar_from_u64(30);
+        let wild_dist = scalar_from_u64(16);
+
+        let pubkey = ProjectivePoint::mul_by_generator(&k);
+        // Tame walked negated: (start-tame_dist)*G = 50*G
+        // Wild walked negated: (k-wild_dist)*G = 50*G
+        let collision_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(k - wild_dist))
+        );
+
+        let start = scalar_to_le_bytes(&start_s);
+        let mut table = DPTable::new(start, pubkey);
+
+        let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
+        assert!(table.insert_and_check(tame_dp).is_none());
+
+        let wild_dp = make_real_dp(&collision_point, &wild_dist, 1);
+        let result = table.insert_and_check(wild_dp);
+        assert!(
+            result.is_some(),
+            "Should find key via k = start - tame_dist + wild_dist"
+        );
+        assert!(verify_key(&result.unwrap(), &pubkey));
+    }
+
+    #[test]
     fn test_signed_distance_wrapping() {
         // Large distance near 2^256 representing negative offset.
         // tame_dist = n-10 (huge LE repr, acts as -10 in scalar arithmetic)
