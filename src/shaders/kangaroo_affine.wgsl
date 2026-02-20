@@ -14,7 +14,7 @@ struct Config {
     num_kangaroos: u32,
     steps_per_call: u32,
     jump_table_size: u32,
-    _padding: u32
+    cycle_cap: u32
 }
 
 // Must match Rust GpuKangaroo struct layout!
@@ -30,7 +30,6 @@ struct Kangaroo {
     _padding: array<u32, 3>
 }
 
-const CYCLE_CAP: u32 = 4096u;
 const REPEAT_THRESHOLD: u32 = 8u;
 
 struct DistinguishedPoint {
@@ -164,7 +163,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         // Select jump based on x coordinate (with cycle escape perturbation)
         var effective_jump_idx = px[0] & 0xFFu;
         if (valid) {
-            let in_cycle = (k.cycle_counter > CYCLE_CAP)
+            let in_cycle = (k.cycle_counter > config.cycle_cap)
                 || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
             if (in_cycle) {
                 effective_jump_idx = (kid + (step * 31u) + k.cycle_counter) & 0xFFu;

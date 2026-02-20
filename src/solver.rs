@@ -147,13 +147,14 @@ impl KangarooSolver {
             MAX_DISTINGUISHED_POINTS,
         );
 
+        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
             num_kangaroos,
             steps_per_call,
             jump_table_size,
-            _padding: 0,
+            cycle_cap,
         };
 
         // Create buffers (reusing bind_group_layout from shared pipeline)
@@ -237,13 +238,14 @@ impl KangarooSolver {
             MAX_DISTINGUISHED_POINTS,
         );
 
+        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
         let config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
             num_kangaroos,
             steps_per_call,
             jump_table_size,
-            _padding: 0,
+            cycle_cap,
         };
         if verbose {
             info!("Config created: steps_per_call={}", steps_per_call);
@@ -284,13 +286,14 @@ impl KangarooSolver {
         solver.calibrate(dp_bits, verbose);
 
         // Update config buffer with calibrated value and correct DP mask
+        let cycle_cap = 512u32.max(2u32.pow(dp_bits / 2));
         let final_config = GpuConfig {
             dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
             dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
             num_kangaroos,
             steps_per_call: solver.steps_per_call,
             jump_table_size: 256,
-            _padding: 0,
+            cycle_cap,
         };
         solver.ctx.queue.write_buffer(
             &solver.buffers.config_buffer,
@@ -458,7 +461,7 @@ impl KangarooSolver {
                 num_kangaroos: self.num_kangaroos,
                 steps_per_call: steps,
                 jump_table_size: 256,
-                _padding: 0,
+                cycle_cap: 512, // Default floor for calibration
             };
             self.ctx.queue.write_buffer(
                 &self.buffers.config_buffer,
