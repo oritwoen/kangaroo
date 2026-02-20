@@ -46,6 +46,10 @@ impl CpuKangarooSolver {
     pub fn solve(&mut self, timeout: Duration) -> Option<Vec<u8>> {
         let start_time = Instant::now();
 
+        if self.range_bits <= 24 {
+            return self.bruteforce_fallback(timeout);
+        }
+
         // Calculate middle of range: 2^(range_bits - 1)
         // Construct scalar for range_middle
         let mut mid_bytes = [0u8; 32];
@@ -121,8 +125,9 @@ impl CpuKangarooSolver {
             .collect();
 
         loop {
-            if start_time.elapsed() > timeout {
-                return self.bruteforce_fallback();
+            let elapsed = start_time.elapsed();
+            if elapsed >= timeout {
+                return None;
             }
 
             // Tame step
@@ -227,15 +232,25 @@ impl CpuKangarooSolver {
         self.ops
     }
 
-    fn bruteforce_fallback(&self) -> Option<Vec<u8>> {
+    fn bruteforce_fallback(&self, timeout: Duration) -> Option<Vec<u8>> {
         if self.range_bits > 24 {
             return None;
         }
+
+        if timeout.is_zero() {
+            return None;
+        }
+
+        let started = Instant::now();
 
         let limit = 1u64.checked_shl(self.range_bits)?;
 
         let mut candidate = self.start;
         for _ in 0..limit {
+            if started.elapsed() > timeout {
+                return None;
+            }
+
             let key_bytes = candidate.to_bytes();
             let first_nonzero = key_bytes.iter().position(|&x| x != 0).unwrap_or(31);
             let trimmed = &key_bytes[first_nonzero..];
@@ -303,5 +318,27 @@ mod tests {
         let hex_key = hex::encode(key);
         let trimmed = hex_key.trim_start_matches('0');
         assert_eq!(trimmed, "12345");
+    }
+
+    #[test]
+    fn test_cpu_solver_respects_timeout_budget() {
+        let pubkey_str = "02e963ffdfe34e63b68aeb42a5826e08af087660e0dac1c3e79f7625ca4e6ae482";
+        let pubkey = parse_pubkey(pubkey_str).unwrap();
+
+        let mut start_bytes = [0u8; 32];
+        start_bytes[29..32].copy_from_slice(&0x10000u32.to_be_bytes()[1..4]);
+
+        let mut solver = CpuKangarooSolver::new(pubkey, start_bytes, 24, 4);
+        let timeout = Duration::from_millis(1);
+
+        let started = Instant::now();
+        let _ = solver.solve(timeout);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "solver exceeded timeout budget too much: {:?}",
+            elapsed
+        );
     }
 }
