@@ -37,6 +37,7 @@ struct CaseResult {
     time_secs: f64,
     total_ops: u64,
     rate: f64,
+    k_factor: f64,
 }
 
 pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bool) -> Result<()> {
@@ -51,10 +52,10 @@ pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bo
     println!("Compute units: {compute_units}\n");
 
     println!(
-        "{:<10} {:>12} {:>12} {:>14}",
-        "Range", "Time", "Ops", "Rate"
+        "{:<10} {:>12} {:>12} {:>14} {:>8}",
+        "Range", "Time", "Ops", "Rate", "K"
     );
-    println!("{}", "-".repeat(52));
+    println!("{}", "-".repeat(62));
 
     let num_k = ctx.optimal_kangaroos();
     let mut results = Vec::with_capacity(CASES.len());
@@ -86,13 +87,15 @@ pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bo
         let total_ops = solver.total_operations();
         let time_secs = duration.as_secs_f64();
         let rate = total_ops as f64 / time_secs;
+        let k_factor = total_ops as f64 / (2.0_f64).powf(case.range_bits as f64 / 2.0);
 
         println!(
-            "{:<10} {:>10.2}s {:>12} {:>12.2}M/s",
+            "{:<10} {:>10.2}s {:>12} {:>12.2}M/s {:>8.3}",
             case.name,
             time_secs,
             total_ops,
-            rate / 1_000_000.0
+            rate / 1_000_000.0,
+            k_factor
         );
 
         results.push(CaseResult {
@@ -100,6 +103,7 @@ pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bo
             time_secs,
             total_ops,
             rate,
+            k_factor,
         });
     }
 
@@ -186,16 +190,17 @@ fn format_gpu_section(device_name: &str, version: &str, results: &[CaseResult]) 
     let mut s = String::new();
     writeln!(s, "### {device_name}").unwrap();
     writeln!(s).unwrap();
-    writeln!(s, "| Range | Time | Ops | Rate |").unwrap();
-    writeln!(s, "|-------|------|-----|------|").unwrap();
+    writeln!(s, "| Range | Time | Ops | Rate | K |").unwrap();
+    writeln!(s, "|-------|------|-----|------|-------|").unwrap();
     for r in results {
         writeln!(
             s,
-            "| {} | {:.2}s | {} | {:.2} M/s |",
+            "| {} | {:.2}s | {} | {:.2} M/s | {:.3} |",
             r.name,
             r.time_secs,
             format_ops(r.total_ops),
-            r.rate / 1_000_000.0
+            r.rate / 1_000_000.0,
+            r.k_factor
         )
         .unwrap();
     }
@@ -382,12 +387,14 @@ mod tests {
                 time_secs: 0.25,
                 total_ops: 4_194_304,
                 rate: 16_780_000.0,
+                k_factor: 4_194_304.0 / (2.0_f64).powf(32.0 / 2.0),
             },
             CaseResult {
                 name: "48-bit",
                 time_secs: 13.0,
                 total_ops: 222_298_112,
                 rate: 17_100_000.0,
+                k_factor: 222_298_112.0 / (2.0_f64).powf(48.0 / 2.0),
             },
         ]
     }

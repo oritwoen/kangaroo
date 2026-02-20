@@ -14,7 +14,7 @@ struct Config {
     num_kangaroos: u32,
     steps_per_call: u32,
     jump_table_size: u32,
-    _padding: u32
+    cycle_cap: u32
 }
 
 // Must match Rust GpuKangaroo struct layout!
@@ -26,11 +26,11 @@ struct Kangaroo {
     is_active: u32,
     cycle_counter: u32,
     repeat_count: u32,
-    _padding: array<u32, 4>
+    last_jump: u32,
+    _padding: array<u32, 3>
 }
 
-const CYCLE_CAP: u32 = 4096u;
-const REPEAT_THRESHOLD: u32 = 8u;
+const REPEAT_THRESHOLD: u32 = 3u;
 
 struct DistinguishedPoint {
     x: array<u32, 8>,
@@ -158,18 +158,24 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     // Track if we already stored a DP this batch
     var dp_stored = false;
 
+    let scalar_zero = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
         // Select jump based on x coordinate (with cycle escape perturbation)
         var effective_jump_idx = px[0] & 0xFFu;
         if (valid) {
-            let in_cycle = (k.cycle_counter > CYCLE_CAP)
+            let in_cycle = (k.cycle_counter > config.cycle_cap)
                 || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
             if (in_cycle) {
                 effective_jump_idx = (kid + (step * 31u) + k.cycle_counter) & 0xFFu;
                 k.cycle_counter = 0u;
                 k.repeat_count = 0u;
             }
+            if (effective_jump_idx == k.last_jump) {
+                effective_jump_idx = (effective_jump_idx + 1u) & 0xFFu;
+            }
+            k.last_jump = effective_jump_idx;
         }
         let jump_idx = effective_jump_idx;
         let jump_point = jump_points[jump_idx];
@@ -320,14 +326,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
         if (valid) {
             // Check for DP before the jump (on current position)
+            // Do NOT reset cycle counters on DP hit — a cycle that
+            // contains a distinguished point must still be detected.
             if (!dp_stored) {
                 if (is_distinguished(px)) {
                     k.x = px;
                     k.y = py;
                     store_dp(k, kid);
                     dp_stored = true;
-                    k.cycle_counter = 0u;
-                    k.repeat_count = 0u;
                 }
             }
 
@@ -335,45 +341,21 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             if (!dx_was_zero) {
                 let y_odd = (py[0] & 1u) != 0u;
 
-                // Walk direction depends on y parity (negation map)
-                var walk_y = jump_point.y;
+                // Normalize to class representative before the walk: {P, -P} -> even-y representative
+                var repr_y = py;
+                var repr_dist = k.dist;
                 if (y_odd) {
-                    walk_y = fe_sub(fe_zero(), jump_point.y);
+                    repr_y = fe_sub(fe_zero(), py);
+                    repr_dist = scalar_sub_256(scalar_zero, k.dist);
                 }
-                let result_walk = affine_add_with_inv(px, py, jump_point.x, walk_y, dx_inv);
-
-                // Virtual DP sampling: probe the opposite direction from the walk
-                if (!dp_stored) {
-                    var probe_y = jump_point.y;
-                    if (!y_odd) {
-                        probe_y = fe_sub(fe_zero(), jump_point.y);
-                    }
-                    let result_probe = affine_add_with_inv(px, py, jump_point.x, probe_y, dx_inv);
-
-                    if (is_distinguished(result_probe.x)) {
-                        var vk = k;
-                        vk.x = result_probe.x;
-                        vk.y = result_probe.y;
-                        if (y_odd) {
-                            vk.dist = scalar_add_256(k.dist, jump_dist);
-                        } else {
-                            vk.dist = scalar_sub_256(k.dist, jump_dist);
-                        }
-                        store_dp(vk, kid);
-                        dp_stored = true;
-                    }
-                }
+                let result_walk = affine_add_with_inv(px, repr_y, jump_point.x, jump_point.y, dx_inv);
 
                 px = result_walk.x;
                 py = result_walk.y;
-                if (y_odd) {
-                    k.dist = scalar_sub_256(k.dist, jump_dist);
-                } else {
-                    k.dist = scalar_add_256(k.dist, jump_dist);
-                }
+                k.dist = scalar_add_256(repr_dist, jump_dist);
 
                 k.cycle_counter = k.cycle_counter + 1u;
-                let new_jump = px[0] & 0xFFu;
+                let new_jump = px[0] & 0xFFFFu;
                 if (new_jump == (k.repeat_count >> 16u)) {
                     let cnt = (k.repeat_count & 0xFFFFu) + 1u;
                     k.repeat_count = (new_jump << 16u) | cnt;
@@ -387,8 +369,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
                         k.y = py;
                         store_dp(k, kid);
                         dp_stored = true;
-                        k.cycle_counter = 0u;
-                        k.repeat_count = 0u;
                     }
                 }
             }

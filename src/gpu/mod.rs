@@ -17,7 +17,7 @@ pub struct GpuConfig {
     pub num_kangaroos: u32,
     pub steps_per_call: u32,
     pub jump_table_size: u32,
-    pub _padding: u32,
+    pub cycle_cap: u32,
 }
 
 #[repr(C)]
@@ -30,7 +30,8 @@ pub struct GpuKangaroo {
     pub is_active: u32,
     pub cycle_counter: u32,
     pub repeat_count: u32,
-    pub _padding: [u32; 4],
+    pub last_jump: u32,
+    pub _padding: [u32; 3],
 }
 
 #[repr(C)]
