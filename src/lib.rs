@@ -13,17 +13,24 @@ mod crypto;
 mod gpu;
 mod gpu_crypto;
 mod math;
+mod modular;
 mod provider;
 mod solver;
 
 pub use cpu::CpuKangarooSolver;
-pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, Point};
+pub use crypto::{
+    full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point,
+};
 pub use gpu_crypto::{GpuBackend, GpuContext};
+pub use modular::ModConstraint;
 pub use solver::KangarooSolver;
 
 use anyhow::anyhow;
 use clap::Parser;
 use indicatif::ProgressBar;
+use k256::elliptic_curve::ops::Reduce;
+use k256::U256 as K256U256;
+use k256::{ProjectivePoint, Scalar};
 #[cfg(feature = "boha")]
 use num_bigint::BigUint;
 use serde::Serialize;
@@ -99,6 +106,14 @@ pub struct Args {
     /// Save benchmark results to BENCHMARKS.md (opt-in)
     #[arg(long)]
     save_benchmarks: bool,
+
+    /// Modular step (hex): search only for x ≡ mod_start (mod mod_step) [e.g. 3c = 60]
+    #[arg(long, default_value = "1")]
+    mod_step: String,
+
+    /// Modular residue (hex): class residue for constraint (0 ≤ R < M) [e.g. 25 = 37]
+    #[arg(long, default_value = "0")]
+    mod_start: String,
 }
 
 #[derive(Serialize)]
@@ -330,6 +345,20 @@ fn print_providers_list() {
     }
 }
 
+fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Vec<u8> {
+    debug_assert!(j_bytes.len() <= 32, "j_bytes too long: {}", j_bytes.len());
+    let mut j_be = [0u8; 32];
+    let len = j_bytes.len().min(32);
+    j_be[32 - len..].copy_from_slice(&j_bytes[..len]);
+    let j_uint = K256U256::from_be_slice(&j_be);
+    let j_scalar = Scalar::reduce(j_uint);
+
+    let k_scalar = mod_start + mod_step * j_scalar;
+    let k_be = k_scalar.to_bytes();
+    let first_nonzero = k_be.iter().position(|&x| x != 0).unwrap_or(k_be.len() - 1);
+    k_be[first_nonzero..].to_vec()
+}
+
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
@@ -361,6 +390,20 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let start = crypto::parse_hex_u256(&params.start_str)?;
     let range_bits = params.range_bits;
 
+    let constraint = crate::modular::ModConstraint::new(
+        &args.mod_step,
+        &args.mod_start,
+        &pubkey,
+        &start,
+        range_bits,
+    )
+    .map_err(|e| anyhow!("Invalid modular constraint: {e}"))?;
+
+    let effective_range = constraint
+        .as_ref()
+        .map(|c| c.effective_range_bits)
+        .unwrap_or(range_bits);
+
     if args.cpu {
         if !args.quiet && !args.json {
             info!("Mode: CPU (Software Solver)");
@@ -369,18 +412,42 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let dp_bits = args
             .dp_bits
             .map(|v| v.clamp(8, 20))
-            .unwrap_or_else(|| (range_bits / 2).saturating_sub(2).clamp(8, 20));
+            .unwrap_or_else(|| (effective_range / 2).saturating_sub(2).clamp(8, 20));
 
         if !args.quiet && !args.json {
             info!("DP bits: {}", dp_bits);
         }
 
-        let mut start_be = start;
-        start_be.reverse();
+        let (solve_pubkey, solve_start_be, solve_range_bits, solve_base_point) = match &constraint {
+            Some(c) => {
+                let mut j_start_be = c.j_start;
+                j_start_be.reverse();
+                (
+                    c.transformed_pubkey,
+                    j_start_be,
+                    c.effective_range_bits,
+                    c.base_point,
+                )
+            }
+            None => {
+                let mut start_be = start;
+                start_be.reverse();
+                (pubkey, start_be, range_bits, ProjectivePoint::GENERATOR)
+            }
+        };
 
-        let mut solver = cpu::CpuKangarooSolver::new(pubkey, start_be, range_bits, dp_bits);
+        let mut solver = cpu::CpuKangarooSolver::new(
+            solve_pubkey,
+            solve_start_be,
+            solve_range_bits,
+            dp_bits,
+            solve_base_point,
+        );
 
-        let expected_ops = (1u128 << (range_bits / 2)) as u64;
+        let expected_ops = 1u128
+            .checked_shl((effective_range / 2) as u32)
+            .unwrap_or(u64::MAX as u128)
+            .min(u64::MAX as u128) as u64;
         let pb = if args.quiet || args.json {
             ProgressBar::hidden()
         } else {
@@ -393,7 +460,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let result = solver.solve(std::time::Duration::from_secs(3600));
         let duration = start_time.elapsed();
 
-        if let Some(private_key) = result {
+        if let Some(j_or_key) = result {
+            let private_key = match &constraint {
+                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                None => j_or_key,
+            };
             pb.finish_with_message("FOUND!");
             let key_hex = hex::encode(&private_key);
             let key_hex_trimmed = key_hex.trim_start_matches('0');
@@ -407,7 +478,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 let total_ops = solver.total_ops();
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
-                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
+                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -415,7 +486,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     unit: "ops/s".to_string(),
                     metadata: Metadata {
                         device: "cpu".to_string(),
-                        range_bits,
+                        range_bits: effective_range,
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
@@ -432,7 +503,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
                 info!(
                     "K-factor: {:.3}",
-                    solver.total_ops() as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                    solver.total_ops() as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
                 );
             }
 
@@ -456,7 +527,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
-        let auto_dp = (range_bits / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
+        let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
         auto_dp.clamp(8, 40)
     });
 
@@ -465,10 +536,25 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Kangaroos: {}", num_k);
     }
 
-    let mut solver =
-        solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?;
+    let mut solver = match &constraint {
+        Some(c) => solver::KangarooSolver::new_with_base(
+            gpu_context,
+            c.transformed_pubkey,
+            c.j_start,
+            c.effective_range_bits,
+            dp_bits,
+            num_k,
+            c.base_point,
+        )?,
+        None => {
+            solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+        }
+    };
 
-    let expected_ops = (1u128 << (range_bits / 2)) as u64;
+    let expected_ops = 1u128
+        .checked_shl((effective_range / 2) as u32)
+        .unwrap_or(u64::MAX as u128)
+        .min(u64::MAX as u128) as u64;
     let pb = if args.quiet || args.json {
         ProgressBar::hidden()
     } else {
@@ -494,7 +580,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let total_ops = solver.total_operations();
         pb.set_position(total_ops);
 
-        if let Some(private_key) = result {
+        if let Some(j_or_key) = result {
+            let private_key = match &constraint {
+                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                None => j_or_key,
+            };
             let duration = start_time.elapsed();
             pb.finish_with_message("FOUND!");
             let key_hex = hex::encode(&private_key);
@@ -513,7 +603,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             if args.json {
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
-                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
+                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -521,7 +611,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     unit: "ops/s".to_string(),
                     metadata: Metadata {
                         device: device_name,
-                        range_bits,
+                        range_bits: effective_range,
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
@@ -538,7 +628,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
                 info!(
                     "K-factor: {:.3}",
-                    total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                    total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
                 );
             }
 
@@ -608,5 +698,46 @@ mod tests {
         // Starting at 0x20... with range 65 bits should fit exactly
         let pr = make_provider_result("20000000000000000", "40000000000000000");
         assert!(validate_search_bounds("20000000000000000", 65, &pr).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_mod_flags_default() {
+        // Verify that mod_step and mod_start fields exist with correct defaults
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+        ])
+        .expect("Failed to parse args");
+
+        assert_eq!(args.mod_step, "1", "mod_step should default to '1'");
+        assert_eq!(args.mod_start, "0", "mod_start should default to '0'");
+    }
+
+    #[test]
+    fn test_cli_mod_flags_custom() {
+        // Verify that custom mod_step and mod_start values are parsed correctly
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+            "--mod-step",
+            "7",
+            "--mod-start",
+            "3",
+        ])
+        .expect("Failed to parse args");
+
+        assert_eq!(args.mod_step, "7", "mod_step should be '7'");
+        assert_eq!(args.mod_start, "3", "mod_start should be '3'");
     }
 }

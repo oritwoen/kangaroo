@@ -52,8 +52,8 @@ pub fn u256_to_le_bytes(val: &U256) -> [u8; 32] {
     *val
 }
 
-/// Verify that private key produces the public key
-pub fn verify_key(private_key: &[u8], public_key: &Point) -> bool {
+/// Verify that private key produces the public key with arbitrary base point
+pub fn verify_key_with_base(private_key: &[u8], public_key: &Point, base_point: &Point) -> bool {
     if private_key.is_empty() || private_key.len() > 32 {
         return false;
     }
@@ -68,8 +68,13 @@ pub fn verify_key(private_key: &[u8], public_key: &Point) -> bool {
         None => return false,
     };
 
-    let computed = ProjectivePoint::mul_by_generator(&scalar);
+    let computed = *base_point * scalar;
     computed == *public_key
+}
+
+/// Verify that private key produces the public key (using generator as base)
+pub fn verify_key(private_key: &[u8], public_key: &Point) -> bool {
+    verify_key_with_base(private_key, public_key, &ProjectivePoint::GENERATOR)
 }
 
 /// Compute compressed public key from private key bytes
@@ -168,4 +173,65 @@ pub fn u256_to_u32_array(val: &U256) -> [u32; 8] {
             u32::from_le_bytes([val[i * 4], val[i * 4 + 1], val[i * 4 + 2], val[i * 4 + 3]]);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_verify_key_with_base_generator() {
+        // Test that verify_key_with_base with generator base matches verify_key
+        // Using puzzle 20 test vector: k=0x1234 (4660 decimal)
+        let key_bytes = [0x12u8, 0x34u8];
+
+        // Compute pubkey: Q = k*G
+        let mut key_be = [0u8; 32];
+        let offset = 32 - key_bytes.len();
+        key_be[offset..].copy_from_slice(&key_bytes);
+        let scalar = Scalar::from_repr_vartime(key_be.into()).unwrap();
+        let pubkey = ProjectivePoint::mul_by_generator(&scalar);
+
+        // Both should return true
+        assert!(
+            verify_key(&key_bytes, &pubkey),
+            "verify_key should return true"
+        );
+        assert!(
+            verify_key_with_base(&key_bytes, &pubkey, &ProjectivePoint::GENERATOR),
+            "verify_key_with_base with generator should return true"
+        );
+    }
+
+    #[test]
+    fn test_verify_key_with_base_custom() {
+        // Test verify_key_with_base with custom base point H = 3*G
+        // Given: H = 3*G, j = 5, Q = j*H = 5*H = 15*G
+        // verify_key_with_base(&[5], &Q, &H) should be true
+        // verify_key(&[5], &Q) should be false (because 5*G ≠ 15*G)
+
+        let three = Scalar::from(3u64);
+        let five = Scalar::from(5u64);
+
+        // H = 3*G
+        let h = ProjectivePoint::GENERATOR * three;
+
+        // Q = 5*H = 15*G
+        let q = h * five;
+
+        // j_bytes = [5]
+        let j_bytes = [5u8];
+
+        // verify_key_with_base(&[5], &Q, &H) should be true
+        assert!(
+            verify_key_with_base(&j_bytes, &q, &h),
+            "verify_key_with_base with custom base H should return true"
+        );
+
+        // verify_key(&[5], &Q) should be false
+        assert!(
+            !verify_key(&j_bytes, &q),
+            "verify_key with generator should return false (5*G ≠ 15*G)"
+        );
+    }
 }

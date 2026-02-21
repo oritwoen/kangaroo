@@ -1,6 +1,6 @@
 //! Distinguished Point hash table for collision detection
 
-use crate::crypto::verify_key;
+use crate::crypto::verify_key_with_base;
 use crate::gpu::GpuDistinguishedPoint;
 use k256::elliptic_curve::ops::Reduce;
 use k256::{ProjectivePoint, Scalar, U256 as K256U256};
@@ -32,15 +32,17 @@ pub struct DPTable {
     table: HashMap<u64, Vec<StoredDP>>,
     start: [u8; 32], // search range start for key computation
     pubkey: ProjectivePoint,
+    base_point: ProjectivePoint,
     total_dps: usize,
 }
 
 impl DPTable {
-    pub fn new(start: [u8; 32], pubkey: ProjectivePoint) -> Self {
+    pub fn new(start: [u8; 32], pubkey: ProjectivePoint, base_point: ProjectivePoint) -> Self {
         Self {
             table: HashMap::new(),
             start,
             pubkey,
+            base_point,
             total_dps: 0,
         }
     }
@@ -120,7 +122,9 @@ impl DPTable {
                     } else {
                         (dist_bytes.as_ref(), existing.dist.as_slice())
                     };
-                    if let Some(key) = compute_candidate_keys_cross_wild(d1, d2, &self.pubkey) {
+                    if let Some(key) =
+                        compute_candidate_keys_cross_wild(d1, d2, &self.pubkey, &self.base_point)
+                    {
                         tracing::info!("Cross-wild collision found! Key: 0x{}", hex::encode(&key));
                         return Some(key);
                     }
@@ -137,7 +141,7 @@ impl DPTable {
                 let candidates =
                     compute_candidate_keys(&self.start, tame_dist_bytes, wild_dist_bytes);
                 for candidate in &candidates {
-                    if verify_key(candidate, &self.pubkey) {
+                    if verify_key_with_base(candidate, &self.pubkey, &self.base_point) {
                         tracing::info!("Collision found! Key: 0x{}", hex::encode(candidate));
                         return Some(candidate.clone());
                     }
@@ -297,6 +301,7 @@ fn compute_candidate_keys_cross_wild(
     d1_bytes: &[u8],
     d2_bytes: &[u8],
     pubkey: &ProjectivePoint,
+    base_point: &ProjectivePoint,
 ) -> Option<Vec<u8>> {
     let d1_pair = distance_scalar_pair(&pad_to_32(d1_bytes));
     let d2_pair = distance_scalar_pair(&pad_to_32(d2_bytes));
@@ -309,7 +314,7 @@ fn compute_candidate_keys_cross_wild(
 
             for candidate in &candidates {
                 let key_bytes = scalar_to_key_bytes(candidate);
-                if verify_key(&key_bytes, pubkey) {
+                if verify_key_with_base(&key_bytes, pubkey, base_point) {
                     return Some(key_bytes);
                 }
             }
@@ -415,7 +420,11 @@ mod tests {
 
     #[test]
     fn insert_and_check_caps_at_maximum() {
-        let mut table = DPTable::new([0u8; 32], ProjectivePoint::GENERATOR);
+        let mut table = DPTable::new(
+            [0u8; 32],
+            ProjectivePoint::GENERATOR,
+            ProjectivePoint::GENERATOR,
+        );
 
         for i in 0..MAX_DISTINGUISHED_POINTS {
             let dp = make_dp(i as u32, i as u32, 0);
@@ -497,7 +506,7 @@ mod tests {
     ) {
         let pubkey = ProjectivePoint::mul_by_generator(&k);
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&tame_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -528,7 +537,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -561,7 +570,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -594,7 +603,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -627,7 +636,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -880,7 +889,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = GpuDistinguishedPoint {
             x: point_to_x_u32(&collision_point),
@@ -935,7 +944,7 @@ mod tests {
         );
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, pubkey);
+        let mut table = DPTable::new(start, pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = GpuDistinguishedPoint {
             x: point_to_x_u32(&collision_point),
@@ -997,7 +1006,7 @@ mod tests {
         let collision_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
 
         let start = scalar_to_le_bytes(&start_s);
-        let mut table = DPTable::new(start, wrong_pubkey);
+        let mut table = DPTable::new(start, wrong_pubkey, ProjectivePoint::GENERATOR);
 
         let tame_dp = make_real_dp(&collision_point, &tame_dist, 0);
         assert!(table.insert_and_check(tame_dp).is_none());
@@ -1055,7 +1064,7 @@ mod tests {
             ProjectivePoint::mul_by_generator(&(-k + d2))
         );
 
-        let mut table = DPTable::new([0u8; 32], pubkey);
+        let mut table = DPTable::new([0u8; 32], pubkey, ProjectivePoint::GENERATOR);
 
         let wild1_dp = make_real_dp(&collision_point, &d1, 1);
         assert!(table.insert_and_check(wild1_dp).is_none());
@@ -1081,7 +1090,7 @@ mod tests {
         let d2 = d1 + (k + k);
         let collision_point = ProjectivePoint::mul_by_generator(&(k + d1));
 
-        let mut table = DPTable::new([0u8; 32], wrong_pubkey);
+        let mut table = DPTable::new([0u8; 32], wrong_pubkey, ProjectivePoint::GENERATOR);
 
         let wild1_dp = make_real_dp(&collision_point, &d1, 1);
         assert!(table.insert_and_check(wild1_dp).is_none());

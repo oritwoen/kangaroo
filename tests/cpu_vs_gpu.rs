@@ -2,6 +2,7 @@
 //!
 //! Run with: cargo test --release cpu_vs_gpu -- --nocapture --ignored
 
+use k256::ProjectivePoint;
 use kangaroo::{
     parse_hex_u256, parse_pubkey, verify_key, CpuKangarooSolver, GpuBackend, GpuContext,
     KangarooSolver,
@@ -46,7 +47,13 @@ fn cpu_vs_gpu_benchmark() {
         let range_bits = *puzzle_num as u32;
         let dp_bits = (range_bits / 2).saturating_sub(2).clamp(8, 20);
 
-        let mut solver = CpuKangarooSolver::new(pubkey, start_bytes, range_bits, dp_bits);
+        let mut solver = CpuKangarooSolver::new(
+            pubkey,
+            start_bytes,
+            range_bits,
+            dp_bits,
+            ProjectivePoint::GENERATOR,
+        );
         let start_time = Instant::now();
         let found = solver.solve(Duration::from_secs(120));
         let elapsed = start_time.elapsed();
