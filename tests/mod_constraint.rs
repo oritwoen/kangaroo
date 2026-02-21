@@ -24,6 +24,15 @@ fn solve_with_constraint(
         ModConstraint::new(mod_step_hex, mod_start_hex, &pubkey, &start_le, range_bits)
             .expect("create constraint");
 
+    // When M > 1, constraint MUST be Some — verifies that constraint path is active
+    if mod_step_hex != "1" {
+        assert!(
+            constraint.is_some(),
+            "M={} > 1 should produce a constraint (got None)",
+            mod_step_hex
+        );
+    }
+
     let (solve_pubkey, solve_start_be, solve_range_bits, solve_base) = match constraint {
         Some(ref c) => {
             let mut j_be = c.j_start;
