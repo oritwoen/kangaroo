@@ -107,11 +107,11 @@ pub struct Args {
     #[arg(long)]
     save_benchmarks: bool,
 
-    /// Modular step: search only for x ≡ mod_start (mod mod_step) [default: 1 = no constraint]
+    /// Modular step (hex): search only for x ≡ mod_start (mod mod_step) [e.g. 3c = 60]
     #[arg(long, default_value = "1")]
     mod_step: String,
 
-    /// Modular residue: class residue for constraint (0 ≤ R < M) [default: 0]
+    /// Modular residue (hex): class residue for constraint (0 ≤ R < M) [e.g. 25 = 37]
     #[arg(long, default_value = "0")]
     mod_start: String,
 }
