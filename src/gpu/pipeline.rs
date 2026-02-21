@@ -6,20 +6,38 @@ use std::sync::Arc;
 use tracing::info;
 use wgpu::{BindGroupLayout, ComputePipeline};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkgroupVariant {
+    Wg64,
+    Wg128,
+}
+
+impl WorkgroupVariant {
+    pub fn size(self) -> u32 {
+        match self {
+            Self::Wg64 => 64,
+            Self::Wg128 => 128,
+        }
+    }
+}
+
 /// Kangaroo compute pipeline (Clone is cheap - wgpu types are Arc-wrapped)
 #[derive(Clone)]
 pub struct KangarooPipeline {
     pub pipeline: Arc<ComputePipeline>,
     pub bind_group_layout: Arc<BindGroupLayout>,
+    pub variant: WorkgroupVariant,
 }
 
 impl KangarooPipeline {
-    pub fn new(ctx: &GpuContext) -> Result<Self> {
+    pub fn new(ctx: &GpuContext, variant: WorkgroupVariant) -> Result<Self> {
         info!("Loading shader sources...");
 
         let field = crate::gpu_crypto::shaders::FIELD_WGSL;
         let curve = crate::gpu_crypto::shaders::CURVE_WGSL;
         let kangaroo = include_str!("../shaders/kangaroo_affine.wgsl");
+
+        let constants = [("WORKGROUP_SIZE", variant.size() as f64)];
 
         info!("Creating shader module...");
         let shader = ctx.create_shader_module("Kangaroo Shader", &[field, curve, kangaroo]);
@@ -122,7 +140,10 @@ impl KangarooPipeline {
                 layout: Some(&pipeline_layout),
                 module: &shader,
                 entry_point: Some("main"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    zero_initialize_workgroup_memory: true,
+                },
                 cache: None,
             });
         info!("Compute pipeline created");
@@ -130,6 +151,7 @@ impl KangarooPipeline {
         Ok(Self {
             pipeline: Arc::new(pipeline),
             bind_group_layout: Arc::new(bind_group_layout),
+            variant,
         })
     }
 }

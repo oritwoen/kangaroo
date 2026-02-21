@@ -230,7 +230,7 @@ impl GpuContext {
     /// Optimal batch size heuristic
     pub fn optimal_batch_size(&self) -> u32 {
         // Heuristic: use large batches for better GPU utilization
-        let workgroup_size = 64u32;
+        let workgroup_size = 128u32;
         // Conservative limit to prevent TDR (Timeout Detection and Recovery) on Windows
         // or just freezing the screen on Linux
         let workgroups = self.max_workgroups().min(65535).min(4096);

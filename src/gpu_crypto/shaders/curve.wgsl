@@ -185,12 +185,9 @@ fn scalar_add_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var carry: u32 = 0u;
 
     for (var i = 0u; i < 8u; i = i + 1u) {
-        let sum1 = a[i] + b[i];
-        let carry1 = select(0u, 1u, sum1 < a[i]);
-        let sum2 = sum1 + carry;
-        let carry2 = select(0u, 1u, sum2 < sum1);
-        c[i] = sum2;
-        carry = select(0u, 1u, (carry1 + carry2) > 0u);
+        let r = adc(a[i], b[i], carry);
+        c[i] = r.x;
+        carry = r.y;
     }
 
     return c;
@@ -199,10 +196,10 @@ fn scalar_add_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
 fn scalar_sub_256(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var borrow: u32 = 0u;
-    for (var i = 0u; i < 8u; i++) {
-        let diff = a[i] - b[i] - borrow;
-        borrow = select(0u, 1u, a[i] < b[i] + borrow || (borrow == 1u && b[i] == 0xFFFFFFFFu));
-        c[i] = diff;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let r = sbb(a[i], b[i], borrow);
+        c[i] = r.x;
+        borrow = r.y;
     }
     return c;
 }

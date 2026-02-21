@@ -53,8 +53,10 @@ struct DistinguishedPoint {
 
 // Shared memory for batch inversion (tree-based Montgomery's trick)
 // Product tree + saved right-child products for inverse propagation
-var<workgroup> shared_prod: array<array<u32, 8>, 64>;    // Product tree / individual inverses
-var<workgroup> shared_save: array<array<u32, 8>, 64>;    // Saved right-child products (63 entries used)
+var<workgroup> shared_prod: array<array<u32, 8>, 128>;   // Product tree / individual inverses
+var<workgroup> shared_save: array<array<u32, 8>, 128>;   // Saved right-child products (127 entries used)
+
+override WORKGROUP_SIZE: u32 = 128u;
 
 // -----------------------------------------------------------------------------
 // Store distinguished point
@@ -127,7 +129,7 @@ fn is_distinguished(px: array<u32, 8>) -> bool {
 // Main compute shader
 // -----------------------------------------------------------------------------
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id_vec: vec3<u32>) {
     let kid = global_id.x;
     let lid = local_id_vec.x;
@@ -158,7 +160,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     // Track if we already stored a DP this batch
     var dp_stored = false;
 
-    let scalar_zero = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    // Check current position once before the walk.
+    // Subsequent checks are done after each successful jump.
+    if (valid && is_distinguished(px)) {
+        k.x = px;
+        k.y = py;
+        store_dp(k, kid);
+        dp_stored = true;
+    }
 
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
@@ -202,54 +211,73 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         //    Eliminates suffix scan: ~14 barriers vs ~30, ~18 fe_mul rounds vs ~26.
 
         // ===== UP-SWEEP: build product tree, save right children =====
-        // Layout of shared_save: [0..31]=level0, [32..47]=level1, [48..55]=level2,
-        //                        [56..59]=level3, [60..61]=level4, [62]=level5
+        // Common offsets for both supported workgroup sizes (64/128)
+        let save_l1 = WORKGROUP_SIZE >> 1u;
+        let save_l2 = save_l1 + (WORKGROUP_SIZE >> 2u);
+        let save_l3 = save_l2 + (WORKGROUP_SIZE >> 3u);
+        let save_l4 = save_l3 + (WORKGROUP_SIZE >> 4u);
 
-        // Level 0 (stride 1): 32 threads merge pairs
+        // Level 0 (stride 1)
         if ((lid & 1u) == 1u) {
             shared_save[lid >> 1u] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 1u], shared_prod[lid]);
         }
         workgroupBarrier();
 
-        // Level 1 (stride 2): 16 threads merge quads
+        // Level 1 (stride 2)
         if ((lid & 3u) == 3u) {
-            shared_save[32u + (lid >> 2u)] = shared_prod[lid];
+            shared_save[save_l1 + (lid >> 2u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 2u], shared_prod[lid]);
         }
         workgroupBarrier();
 
-        // Level 2 (stride 4): 8 threads merge octets
+        // Level 2 (stride 4)
         if ((lid & 7u) == 7u) {
-            shared_save[48u + (lid >> 3u)] = shared_prod[lid];
+            shared_save[save_l2 + (lid >> 3u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 4u], shared_prod[lid]);
         }
         workgroupBarrier();
 
-        // Level 3 (stride 8): 4 threads merge 16-element groups
+        // Level 3 (stride 8)
         if ((lid & 15u) == 15u) {
-            shared_save[56u + (lid >> 4u)] = shared_prod[lid];
+            shared_save[save_l3 + (lid >> 4u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 8u], shared_prod[lid]);
         }
         workgroupBarrier();
 
-        // Level 4 (stride 16): 2 threads merge 32-element halves
+        // Level 4 (stride 16)
         if ((lid & 31u) == 31u) {
-            shared_save[60u + (lid >> 5u)] = shared_prod[lid];
+            shared_save[save_l4 + (lid >> 5u)] = shared_prod[lid];
             shared_prod[lid] = fe_mul(shared_prod[lid - 16u], shared_prod[lid]);
         }
         workgroupBarrier();
 
-        // Level 5 (stride 32): 1 thread merges full 64-element product
-        if (lid == 63u) {
-            shared_save[62u] = shared_prod[63u];
-            shared_prod[63u] = fe_mul(shared_prod[31u], shared_prod[63u]);
+        if (WORKGROUP_SIZE == 128u) {
+            // Level 5 (stride 32): 2 threads merge 64-element groups
+            if ((lid & 63u) == 63u) {
+                shared_save[124u + (lid >> 6u)] = shared_prod[lid];
+                shared_prod[lid] = fe_mul(shared_prod[lid - 32u], shared_prod[lid]);
+            }
+            workgroupBarrier();
+
+            // Level 6 (stride 64): 1 thread merges full 128-element product
+            if (lid == 127u) {
+                shared_save[126u] = shared_prod[127u];
+                shared_prod[127u] = fe_mul(shared_prod[63u], shared_prod[127u]);
+            }
+        } else {
+            // WORKGROUP_SIZE == 64: final root merge at stride 32
+            if (lid == 63u) {
+                shared_save[62u] = shared_prod[63u];
+                shared_prod[63u] = fe_mul(shared_prod[31u], shared_prod[63u]);
+            }
         }
         workgroupBarrier();
 
         // ===== INVERT root (total product of all dx values) =====
+        let root = WORKGROUP_SIZE - 1u;
         if (lid == 0u) {
-            shared_prod[63u] = fe_inv(shared_prod[63u]);
+            shared_prod[root] = fe_inv(shared_prod[root]);
         }
         workgroupBarrier();
 
@@ -257,57 +285,79 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         // At each node: inv(left) = inv(parent) * right_saved
         //               inv(right) = inv(parent) * left_preserved
 
-        // Level 5 (stride 32): 1 thread splits root inverse
-        if (lid == 63u) {
-            let inv_p = shared_prod[63u];
-            let left = shared_prod[31u];
-            let right = shared_save[62u];
-            shared_prod[31u] = fe_mul(inv_p, right);
-            shared_prod[63u] = fe_mul(inv_p, left);
-        }
-        workgroupBarrier();
+        if (WORKGROUP_SIZE == 128u) {
+            // Level 6 (stride 64): 1 thread splits root inverse
+            if (lid == 127u) {
+                let inv_p = shared_prod[127u];
+                let left = shared_prod[63u];
+                let right = shared_save[126u];
+                shared_prod[63u] = fe_mul(inv_p, right);
+                shared_prod[127u] = fe_mul(inv_p, left);
+            }
+            workgroupBarrier();
 
-        // Level 4 (stride 16): 2 threads
+            // Level 5 (stride 32): 2 threads
+            if ((lid & 63u) == 63u) {
+                let inv_p = shared_prod[lid];
+                let left = shared_prod[lid - 32u];
+                let right = shared_save[124u + (lid >> 6u)];
+                shared_prod[lid - 32u] = fe_mul(inv_p, right);
+                shared_prod[lid] = fe_mul(inv_p, left);
+            }
+            workgroupBarrier();
+        } else {
+            // WORKGROUP_SIZE == 64: split root at stride 32
+            if (lid == 63u) {
+                let inv_p = shared_prod[63u];
+                let left = shared_prod[31u];
+                let right = shared_save[62u];
+                shared_prod[31u] = fe_mul(inv_p, right);
+                shared_prod[63u] = fe_mul(inv_p, left);
+            }
+            workgroupBarrier();
+        }
+
+        // Level 4 (stride 16): 4 threads
         if ((lid & 31u) == 31u) {
             let inv_p = shared_prod[lid];
             let left = shared_prod[lid - 16u];
-            let right = shared_save[60u + (lid >> 5u)];
+            let right = shared_save[save_l4 + (lid >> 5u)];
             shared_prod[lid - 16u] = fe_mul(inv_p, right);
             shared_prod[lid] = fe_mul(inv_p, left);
         }
         workgroupBarrier();
 
-        // Level 3 (stride 8): 4 threads
+        // Level 3 (stride 8): 8 threads
         if ((lid & 15u) == 15u) {
             let inv_p = shared_prod[lid];
             let left = shared_prod[lid - 8u];
-            let right = shared_save[56u + (lid >> 4u)];
+            let right = shared_save[save_l3 + (lid >> 4u)];
             shared_prod[lid - 8u] = fe_mul(inv_p, right);
             shared_prod[lid] = fe_mul(inv_p, left);
         }
         workgroupBarrier();
 
-        // Level 2 (stride 4): 8 threads
+        // Level 2 (stride 4): 16 threads
         if ((lid & 7u) == 7u) {
             let inv_p = shared_prod[lid];
             let left = shared_prod[lid - 4u];
-            let right = shared_save[48u + (lid >> 3u)];
+            let right = shared_save[save_l2 + (lid >> 3u)];
             shared_prod[lid - 4u] = fe_mul(inv_p, right);
             shared_prod[lid] = fe_mul(inv_p, left);
         }
         workgroupBarrier();
 
-        // Level 1 (stride 2): 16 threads
+        // Level 1 (stride 2): 32 threads
         if ((lid & 3u) == 3u) {
             let inv_p = shared_prod[lid];
             let left = shared_prod[lid - 2u];
-            let right = shared_save[32u + (lid >> 2u)];
+            let right = shared_save[save_l1 + (lid >> 2u)];
             shared_prod[lid - 2u] = fe_mul(inv_p, right);
             shared_prod[lid] = fe_mul(inv_p, left);
         }
         workgroupBarrier();
 
-        // Level 0 (stride 1): 32 threads produce individual inverses
+        // Level 0 (stride 1): 64 threads produce individual inverses
         if ((lid & 1u) == 1u) {
             let inv_p = shared_prod[lid];
             let left = shared_prod[lid - 1u];
@@ -325,34 +375,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
         // =====================================================================
 
         if (valid) {
-            // Check for DP before the jump (on current position)
-            // Do NOT reset cycle counters on DP hit — a cycle that
-            // contains a distinguished point must still be detected.
-            if (!dp_stored) {
-                if (is_distinguished(px)) {
-                    k.x = px;
-                    k.y = py;
-                    store_dp(k, kid);
-                    dp_stored = true;
-                }
-            }
-
             // Skip if dx was zero (point collision - astronomically unlikely)
             if (!dx_was_zero) {
                 let y_odd = (py[0] & 1u) != 0u;
 
                 // Normalize to class representative before the walk: {P, -P} -> even-y representative
                 var repr_y = py;
-                var repr_dist = k.dist;
                 if (y_odd) {
                     repr_y = fe_sub(fe_zero(), py);
-                    repr_dist = scalar_sub_256(scalar_zero, k.dist);
                 }
                 let result_walk = affine_add_with_inv(px, repr_y, jump_point.x, jump_point.y, dx_inv);
 
                 px = result_walk.x;
                 py = result_walk.y;
-                k.dist = scalar_add_256(repr_dist, jump_dist);
+                if (y_odd) {
+                    // (-dist) + jump == jump - dist (mod 2^256)
+                    k.dist = scalar_sub_256(jump_dist, k.dist);
+                } else {
+                    k.dist = scalar_add_256(k.dist, jump_dist);
+                }
 
                 k.cycle_counter = k.cycle_counter + 1u;
                 let new_jump = px[0] & 0xFFFFu;

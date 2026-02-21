@@ -7,6 +7,7 @@ use crate::cpu::DPTable;
 use crate::crypto::{Point, U256};
 use crate::gpu::{
     GpuBuffers, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, KangarooPipeline,
+    WorkgroupVariant,
 };
 use crate::math::create_dp_mask;
 use anyhow::{anyhow, Result};
@@ -17,7 +18,6 @@ use tracing::info;
 const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
 /// Target dispatch time in milliseconds (stay under TDR threshold)
 const TARGET_DISPATCH_MS: u128 = 50;
-const WORKGROUP_SIZE: u32 = 64;
 
 /// Shared resources for batch mode (pipeline created once, reused)
 #[allow(dead_code)]
@@ -30,7 +30,12 @@ pub struct SharedResources {
 impl SharedResources {
     /// Create shared resources for batch mode
     pub fn new(ctx: GpuContext) -> Result<Self> {
-        let pipeline = KangarooPipeline::new(&ctx)?;
+        let variant = if ctx.max_workgroup_size() >= 128 {
+            WorkgroupVariant::Wg128
+        } else {
+            WorkgroupVariant::Wg64
+        };
+        let pipeline = KangarooPipeline::new(&ctx, variant)?;
         Ok(Self { ctx, pipeline })
     }
 }
@@ -45,6 +50,7 @@ pub struct KangarooSolver {
     num_kangaroos: u32,
     #[allow(dead_code)]
     steps_per_call: u32,
+    workgroup_size: u32,
     current_slot: usize,
 }
 
@@ -224,6 +230,7 @@ impl KangarooSolver {
         let pipeline_clone = KangarooPipeline {
             pipeline: pipeline.pipeline.clone(),
             bind_group_layout: pipeline.bind_group_layout.clone(),
+            variant: pipeline.variant,
         };
 
         Ok(Self {
@@ -234,8 +241,88 @@ impl KangarooSolver {
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
+            workgroup_size: pipeline.variant.size(),
             current_slot: 0,
         })
+    }
+
+    fn benchmark_variant(
+        ctx: &GpuContext,
+        variant: WorkgroupVariant,
+        config: &GpuConfig,
+        jump_points: &[crate::gpu::GpuAffinePoint],
+        jump_distances: &[[u32; 8]],
+        kangaroos: &[GpuKangaroo],
+        num_kangaroos: u32,
+    ) -> Result<(KangarooPipeline, u128)> {
+        let pipeline = KangarooPipeline::new(ctx, variant)?;
+        let buffers = GpuBuffers::new(
+            ctx,
+            &pipeline,
+            config,
+            jump_points,
+            jump_distances,
+            num_kangaroos,
+            MAX_DISTINGUISHED_POINTS,
+        )?;
+        upload_kangaroos(ctx, &buffers, kangaroos)?;
+
+        // warmup
+        Self::dispatch_once_raw(ctx, &pipeline, &buffers, num_kangaroos, variant.size())?;
+
+        let start = Instant::now();
+        Self::dispatch_once_raw(ctx, &pipeline, &buffers, num_kangaroos, variant.size())?;
+        let elapsed = start.elapsed().as_millis();
+
+        Ok((pipeline, elapsed))
+    }
+
+    fn select_best_variant(
+        ctx: &GpuContext,
+        config: &GpuConfig,
+        jump_points: &[crate::gpu::GpuAffinePoint],
+        jump_distances: &[[u32; 8]],
+        kangaroos: &[GpuKangaroo],
+        num_kangaroos: u32,
+        verbose: bool,
+    ) -> Result<KangarooPipeline> {
+        let mut variants = vec![WorkgroupVariant::Wg64];
+        if ctx.max_workgroup_size() >= 128 {
+            variants.push(WorkgroupVariant::Wg128);
+        }
+
+        let mut best: Option<(u128, KangarooPipeline)> = None;
+
+        for variant in variants {
+            let (pipeline, elapsed) = Self::benchmark_variant(
+                ctx,
+                variant,
+                config,
+                jump_points,
+                jump_distances,
+                kangaroos,
+                num_kangaroos,
+            )?;
+
+            if verbose {
+                info!(
+                    "Kernel probe: workgroup={} dispatch={}ms",
+                    variant.size(),
+                    elapsed
+                );
+            }
+
+            match &best {
+                None => best = Some((elapsed, pipeline)),
+                Some((best_elapsed, _)) if elapsed < *best_elapsed => {
+                    best = Some((elapsed, pipeline))
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(_, p)| p)
+            .ok_or_else(|| anyhow!("No compatible kernel variant available"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -249,14 +336,6 @@ impl KangarooSolver {
         verbose: bool,
         base_point: ProjectivePoint,
     ) -> Result<Self> {
-        if verbose {
-            info!("Creating pipeline...");
-        }
-        let pipeline = KangarooPipeline::new(&ctx)?;
-        if verbose {
-            info!("Pipeline created");
-        }
-
         if verbose {
             info!("Generating jump table...");
         }
@@ -297,6 +376,26 @@ impl KangarooSolver {
             info!("Config created: steps_per_call={}", steps_per_call);
         }
 
+        let kangaroos =
+            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
+
+        if verbose {
+            info!("Probing kernel variants (64/128)...");
+        }
+        let pipeline = Self::select_best_variant(
+            &ctx,
+            &config,
+            &jump_points,
+            &jump_distances,
+            &kangaroos,
+            num_kangaroos,
+            verbose,
+        )?;
+        if verbose {
+            info!("Selected kernel workgroup={}", pipeline.variant.size());
+        }
+        let workgroup_size = pipeline.variant.size();
+
         // Create buffers
         if verbose {
             info!("Creating GPU buffers...");
@@ -312,9 +411,6 @@ impl KangarooSolver {
             max_dps,
         )?;
 
-        // Initialize kangaroos
-        let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
         upload_kangaroos(&ctx, &buffers, &kangaroos)?;
 
         // Create solver instance
@@ -326,6 +422,7 @@ impl KangarooSolver {
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
+            workgroup_size,
             current_slot: 0,
         };
 
@@ -375,7 +472,7 @@ impl KangarooSolver {
             });
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, self.buffers.bind_group(slot), &[]);
-            let workgroups = self.num_kangaroos.div_ceil(WORKGROUP_SIZE);
+            let workgroups = self.num_kangaroos.div_ceil(self.workgroup_size);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
@@ -547,8 +644,24 @@ impl KangarooSolver {
 
     /// Single GPU dispatch without readback (for calibration)
     fn dispatch_once(&self) {
-        let mut encoder = self
-            .ctx
+        Self::dispatch_once_raw(
+            &self.ctx,
+            &self.pipeline,
+            &self.buffers,
+            self.num_kangaroos,
+            self.workgroup_size,
+        )
+        .unwrap();
+    }
+
+    fn dispatch_once_raw(
+        ctx: &GpuContext,
+        pipeline: &KangarooPipeline,
+        buffers: &GpuBuffers,
+        num_kangaroos: u32,
+        workgroup_size: u32,
+    ) -> Result<()> {
+        let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Calibration Encoder"),
@@ -559,17 +672,18 @@ impl KangarooSolver {
                 label: Some("Calibration Pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline.pipeline);
-            pass.set_bind_group(0, self.buffers.bind_group(0), &[]);
-            let workgroups = self.num_kangaroos.div_ceil(WORKGROUP_SIZE);
+            pass.set_pipeline(&pipeline.pipeline);
+            pass.set_bind_group(0, buffers.bind_group(0), &[]);
+            let workgroups = num_kangaroos.div_ceil(workgroup_size);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        self.ctx.queue.submit(Some(encoder.finish()));
-        self.ctx
-            .device
+        ctx.queue.submit(Some(encoder.finish()));
+        ctx.device
             .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to poll during dispatch: {e:?}"))?;
+
+        Ok(())
     }
 }
 
