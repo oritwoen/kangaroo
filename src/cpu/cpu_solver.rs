@@ -3,7 +3,7 @@
 //! Used for performance comparison with GPU implementation.
 
 use super::dp_table::compute_candidate_scalars;
-use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::point::AffineCoordinates;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::U256 as K256U256;
@@ -20,6 +20,7 @@ pub struct CpuKangarooSolver {
     tame_table: HashMap<u128, Scalar>, // x_low -> distance (Scalar)
     wild_table: HashMap<u128, Scalar>,
     ops: u64,
+    base_point: ProjectivePoint,
 }
 
 impl CpuKangarooSolver {
@@ -28,6 +29,7 @@ impl CpuKangarooSolver {
         start_bytes: [u8; 32],
         range_bits: u32,
         dp_bits: u32,
+        base_point: ProjectivePoint,
     ) -> Self {
         let start_uint = K256U256::from_be_slice(&start_bytes);
         let start = Scalar::reduce(start_uint);
@@ -40,6 +42,7 @@ impl CpuKangarooSolver {
             tame_table: HashMap::new(),
             wild_table: HashMap::new(),
             ops: 0,
+            base_point,
         }
     }
 
@@ -77,7 +80,7 @@ impl CpuKangarooSolver {
         // Initialize tame kangaroo at mid
         // tame_scalar = mid
         // tame_dist = 0 (relative to mid)
-        let mut tame_pos = ProjectivePoint::mul_by_generator(&mid);
+        let mut tame_pos = self.base_point * mid;
         let mut tame_dist = Scalar::ZERO;
 
         // Initialize wild kangaroo at pubkey
@@ -121,7 +124,7 @@ impl CpuKangarooSolver {
 
         let jump_points: Vec<ProjectivePoint> = jump_distances
             .iter()
-            .map(ProjectivePoint::mul_by_generator)
+            .map(|d| self.base_point * *d)
             .collect();
 
         loop {
@@ -175,7 +178,13 @@ impl CpuKangarooSolver {
             if (tame_x & self.dp_mask) == 0 {
                 if let Some(&wild_d) = self.wild_table.get(&tame_x) {
                     tracing::info!("Collision Tame->Wild: x={:x}", tame_x);
-                    if let Some(key) = try_candidates(mid, tame_dist_before, wild_d, &self.pubkey) {
+                    if let Some(key) = try_candidates(
+                        mid,
+                        tame_dist_before,
+                        wild_d,
+                        &self.pubkey,
+                        &self.base_point,
+                    ) {
                         return Some(key);
                     }
                 }
@@ -226,7 +235,13 @@ impl CpuKangarooSolver {
             if (wild_x & self.dp_mask) == 0 {
                 if let Some(&tame_d) = self.tame_table.get(&wild_x) {
                     tracing::info!("Collision Wild->Tame: x={:x}", wild_x);
-                    if let Some(key) = try_candidates(mid, tame_d, wild_dist_before, &self.pubkey) {
+                    if let Some(key) = try_candidates(
+                        mid,
+                        tame_d,
+                        wild_dist_before,
+                        &self.pubkey,
+                        &self.base_point,
+                    ) {
                         return Some(key);
                     }
                 }
@@ -261,7 +276,7 @@ impl CpuKangarooSolver {
             let key_bytes = candidate.to_bytes();
             let first_nonzero = key_bytes.iter().position(|&x| x != 0).unwrap_or(31);
             let trimmed = &key_bytes[first_nonzero..];
-            if crate::crypto::verify_key(trimmed, &self.pubkey) {
+            if crate::crypto::verify_key_with_base(trimmed, &self.pubkey, &self.base_point) {
                 return Some(trimmed.to_vec());
             }
             candidate += Scalar::ONE;
@@ -284,8 +299,9 @@ fn try_candidates(
     tame_dist: Scalar,
     wild_dist: Scalar,
     pubkey: &ProjectivePoint,
+    base_point: &ProjectivePoint,
 ) -> Option<Vec<u8>> {
-    use crate::crypto::verify_key;
+    use crate::crypto::verify_key_with_base;
 
     let candidates = compute_candidate_scalars(mid, tame_dist, wild_dist);
 
@@ -293,7 +309,7 @@ fn try_candidates(
         let key_bytes = key_scalar.to_bytes();
         let first_nonzero = key_bytes.iter().position(|&x| x != 0).unwrap_or(31);
         let trimmed = &key_bytes[first_nonzero..];
-        if verify_key(trimmed, pubkey) {
+        if verify_key_with_base(trimmed, pubkey, base_point) {
             return Some(trimmed.to_vec());
         }
     }
@@ -317,7 +333,13 @@ mod tests {
         let mut start_bytes = [0u8; 32];
         start_bytes[29..32].copy_from_slice(&0x10000u32.to_be_bytes()[1..4]);
 
-        let mut solver = CpuKangarooSolver::new(pubkey, start_bytes, range_bits, dp_bits);
+        let mut solver = CpuKangarooSolver::new(
+            pubkey,
+            start_bytes,
+            range_bits,
+            dp_bits,
+            ProjectivePoint::GENERATOR,
+        );
         let result = solver.solve(Duration::from_secs(10));
 
         assert!(result.is_some());
@@ -335,7 +357,8 @@ mod tests {
         let mut start_bytes = [0u8; 32];
         start_bytes[29..32].copy_from_slice(&0x10000u32.to_be_bytes()[1..4]);
 
-        let mut solver = CpuKangarooSolver::new(pubkey, start_bytes, 24, 4);
+        let mut solver =
+            CpuKangarooSolver::new(pubkey, start_bytes, 24, 4, ProjectivePoint::GENERATOR);
         let timeout = Duration::from_millis(1);
 
         let started = Instant::now();

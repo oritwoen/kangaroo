@@ -28,6 +28,7 @@ use indicatif::ProgressBar;
 use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
+use k256::ProjectivePoint;
 use tracing::{error, info};
 
 /// Pollard's Kangaroo ECDLP solver for secp256k1
@@ -386,7 +387,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let mut start_be = start;
         start_be.reverse();
 
-        let mut solver = cpu::CpuKangarooSolver::new(pubkey, start_be, range_bits, dp_bits);
+        let mut solver = cpu::CpuKangarooSolver::new(pubkey, start_be, range_bits, dp_bits, ProjectivePoint::GENERATOR);
 
         let expected_ops = (1u128 << (range_bits / 2)) as u64;
         let pb = if args.quiet || args.json {
