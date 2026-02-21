@@ -59,7 +59,11 @@ impl DPTable {
             let ktype_str = match dp.ktype {
                 0 => "tame",
                 1 => "wild1",
-                _ => "wild2",
+                2 => "wild2",
+                _ => {
+                    tracing::warn!("DP[{}] unknown ktype={}, skipping", total, dp.ktype);
+                    return None;
+                }
             };
             tracing::debug!(
                 "DP[{}] {}: x[0..2]=[{:08x},{:08x}] dist[0..2]=[{:08x},{:08x}] affine_x[0..4]={}",
@@ -99,7 +103,8 @@ impl DPTable {
                     let ktype_str = match dp.ktype {
                         0 => "tame-tame",
                         1 => "wild1-wild1",
-                        _ => "wild2-wild2",
+                        2 => "wild2-wild2",
+                        _ => "unknown-unknown",
                     };
                     tracing::debug!(
                         "Same-type collision ({}): affine_x={}",
@@ -193,7 +198,8 @@ impl DPTable {
                 match dp.ktype {
                     0 => tame += 1,
                     1 => w1 += 1,
-                    _ => w2 += 1,
+                    2 => w2 += 1,
+                    _ => {} // silently skip unknown types
                 }
             }
         }
@@ -299,8 +305,7 @@ fn compute_candidate_keys_cross_wild(
     for &d1 in &d1_pair {
         for &d2 in &d2_pair {
             let k_diff = (d2 - d1) * half;
-            let k_sum = (d1 + d2) * half;
-            let candidates = [k_diff, Scalar::ZERO - k_diff, k_sum, Scalar::ZERO - k_sum];
+            let candidates = [k_diff, Scalar::ZERO - k_diff];
 
             for candidate in &candidates {
                 let key_bytes = scalar_to_key_bytes(candidate);

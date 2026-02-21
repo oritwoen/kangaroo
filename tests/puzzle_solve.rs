@@ -216,7 +216,10 @@ fn test_smoke_puzzle_20() {
 fn test_multi_set_puzzle_21() {
     println!("\n=== Multi-Set Test: Puzzle 21 (21-bit, 3-type kangaroos) ===");
 
-    let puzzle = get_test_puzzles()[1].clone();
+     let puzzle = get_test_puzzles()
+         .into_iter()
+         .find(|p| p.puzzle_number == 21)
+         .expect("Puzzle 21 not found in test fixtures");
     println!("  Target: {}", puzzle.pubkey);
     println!("  Range: {} bits", puzzle.range_bits);
     println!("  Expected: 0x{}", puzzle.expected_key);
