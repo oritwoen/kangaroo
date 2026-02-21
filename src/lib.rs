@@ -346,6 +346,7 @@ fn print_providers_list() {
 }
 
 fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Vec<u8> {
+    debug_assert!(j_bytes.len() <= 32, "j_bytes too long: {}", j_bytes.len());
     let mut j_be = [0u8; 32];
     let len = j_bytes.len().min(32);
     j_be[32 - len..].copy_from_slice(&j_bytes[..len]);
@@ -354,7 +355,7 @@ fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Ve
 
     let k_scalar = mod_start + mod_step * j_scalar;
     let k_be = k_scalar.to_bytes();
-    let first_nonzero = k_be.iter().position(|&x| x != 0).unwrap_or(31);
+    let first_nonzero = k_be.iter().position(|&x| x != 0).unwrap_or(k_be.len() - 1);
     k_be[first_nonzero..].to_vec()
 }
 
@@ -443,7 +444,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             solve_base_point,
         );
 
-        let expected_ops = (1u128 << (effective_range / 2)) as u64;
+        let expected_ops = (1u128 << (effective_range / 2)).min(u64::MAX as u128) as u64;
         let pb = if args.quiet || args.json {
             ProgressBar::hidden()
         } else {
@@ -547,7 +548,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    let expected_ops = (1u128 << (effective_range / 2)) as u64;
+    let expected_ops = (1u128 << (effective_range / 2)).min(u64::MAX as u128) as u64;
     let pb = if args.quiet || args.json {
         ProgressBar::hidden()
     } else {

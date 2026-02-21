@@ -130,6 +130,9 @@ fn sub_u64_from_u256_le(le_bytes: &[u8; 32], val: u64) -> [u8; 32] {
             borrow = 1;
         }
     }
+    if borrow != 0 {
+        return [0u8; 32];
+    }
     result
 }
 
