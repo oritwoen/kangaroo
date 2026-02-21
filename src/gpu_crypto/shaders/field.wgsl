@@ -21,22 +21,48 @@ const P7: u32 = 0xFFFFFFFFu;
 fn fe_add(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var carry: u32 = 0u;
-    let overflow_fix = array<u32, 8>(977u, 1u, 0u, 0u, 0u, 0u, 0u, 0u);
 
-    for (var i = 0u; i < 8u; i = i + 1u) {
-        let r = adc(a[i], b[i], carry);
-        c[i] = r.x;
-        carry = r.y;
-    }
+    var r = adc(a[0], b[0], carry); c[0] = r.x; carry = r.y;
+    r = adc(a[1], b[1], carry); c[1] = r.x; carry = r.y;
+    r = adc(a[2], b[2], carry); c[2] = r.x; carry = r.y;
+    r = adc(a[3], b[3], carry); c[3] = r.x; carry = r.y;
+    r = adc(a[4], b[4], carry); c[4] = r.x; carry = r.y;
+    r = adc(a[5], b[5], carry); c[5] = r.x; carry = r.y;
+    r = adc(a[6], b[6], carry); c[6] = r.x; carry = r.y;
+    r = adc(a[7], b[7], carry); c[7] = r.x; carry = r.y;
 
     // If overflow (result >= 2^256), reduce by adding 2^32 + 977 (because 2^256 ≡ 2^32 + 977 mod P)
     if (carry == 1u) {
-        carry = 0u;
-        for (var i = 0u; i < 8u; i = i + 1u) {
-            let r = adc(c[i], overflow_fix[i], carry);
-            c[i] = r.x;
-            carry = r.y;
-        }
+        var r = adc(c[0], 977u, 0u);
+        c[0] = r.x;
+        carry = r.y;
+
+        r = adc(c[1], 1u, carry);
+        c[1] = r.x;
+        carry = r.y;
+
+        r = adc(c[2], 0u, carry);
+        c[2] = r.x;
+        carry = r.y;
+
+        r = adc(c[3], 0u, carry);
+        c[3] = r.x;
+        carry = r.y;
+
+        r = adc(c[4], 0u, carry);
+        c[4] = r.x;
+        carry = r.y;
+
+        r = adc(c[5], 0u, carry);
+        c[5] = r.x;
+        carry = r.y;
+
+        r = adc(c[6], 0u, carry);
+        c[6] = r.x;
+        carry = r.y;
+
+        r = adc(c[7], 0u, carry);
+        c[7] = r.x;
     }
 
     return c;
@@ -49,22 +75,48 @@ fn fe_add(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
 fn fe_sub(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     var c: array<u32, 8>;
     var borrow: u32 = 0u;
-    let prime = array<u32, 8>(P0, P1, P2, P3, P4, P5, P6, P7);
 
-    for (var i = 0u; i < 8u; i = i + 1u) {
-        let r = sbb(a[i], b[i], borrow);
-        c[i] = r.x;
-        borrow = r.y;
-    }
+    var r = sbb(a[0], b[0], borrow); c[0] = r.x; borrow = r.y;
+    r = sbb(a[1], b[1], borrow); c[1] = r.x; borrow = r.y;
+    r = sbb(a[2], b[2], borrow); c[2] = r.x; borrow = r.y;
+    r = sbb(a[3], b[3], borrow); c[3] = r.x; borrow = r.y;
+    r = sbb(a[4], b[4], borrow); c[4] = r.x; borrow = r.y;
+    r = sbb(a[5], b[5], borrow); c[5] = r.x; borrow = r.y;
+    r = sbb(a[6], b[6], borrow); c[6] = r.x; borrow = r.y;
+    r = sbb(a[7], b[7], borrow); c[7] = r.x; borrow = r.y;
 
     // If borrow, add p back
     if (borrow == 1u) {
-        var carry2: u32 = 0u;
-        for (var i = 0u; i < 8u; i = i + 1u) {
-            let r = adc(c[i], prime[i], carry2);
-            c[i] = r.x;
-            carry2 = r.y;
-        }
+        var r = adc(c[0], P0, 0u);
+        c[0] = r.x;
+        var carry2 = r.y;
+
+        r = adc(c[1], P1, carry2);
+        c[1] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[2], P2, carry2);
+        c[2] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[3], P3, carry2);
+        c[3] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[4], P4, carry2);
+        c[4] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[5], P5, carry2);
+        c[5] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[6], P6, carry2);
+        c[6] = r.x;
+        carry2 = r.y;
+
+        r = adc(c[7], P7, carry2);
+        c[7] = r.x;
     }
 
     return c;
@@ -118,6 +170,20 @@ fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
 // -----------------------------------------------------------------------------
 fn fe_double(a: array<u32, 8>) -> array<u32, 8> {
     return fe_add(a, a);
+}
+
+// -----------------------------------------------------------------------------
+// Fast multiply by 977 (secp256k1 reduction constant)
+// 2 half-word multiplies instead of 4 in mul32
+// -----------------------------------------------------------------------------
+fn mul_977(h: u32) -> vec2<u32> {
+    let h_lo = h & 0xFFFFu;
+    let h_hi = h >> 16u;
+    let t0 = h_lo * 977u;
+    let t1 = h_hi * 977u;
+    let lo = t0 + ((t1 & 0xFFFFu) << 16u);
+    let hi = (t1 >> 16u) + select(0u, 1u, lo < t0);
+    return vec2<u32>(lo, hi);
 }
 
 // -----------------------------------------------------------------------------
@@ -253,144 +319,144 @@ fn fe_mul(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
     // Reduce p15
     h = p15; p15 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p7; p7 = p7 + t.x; c = select(0u, 1u, p7 < old);
         old = p8; p8 = p8 + t.y + c; c = select(0u, 1u, p8 < old || (c == 1u && t.y == 0u && p8 == old));
         old = p8; p8 = p8 + h; c = c + select(0u, 1u, p8 < old);
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-        if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-        if (c > 0u) { p15 = p15 + c; }
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+        old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+        p15 = p15 + c;
     }
 
     // Reduce p14
     h = p14; p14 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p6; p6 = p6 + t.x; c = select(0u, 1u, p6 < old);
         old = p7; p7 = p7 + t.y + c; c = select(0u, 1u, p7 < old || (c == 1u && t.y == 0u && p7 == old));
         old = p7; p7 = p7 + h; c = c + select(0u, 1u, p7 < old);
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-        if (c > 0u) { p14 = p14 + c; }
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+        p14 = p14 + c;
     }
 
     // Reduce p13
     h = p13; p13 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p5; p5 = p5 + t.x; c = select(0u, 1u, p5 < old);
         old = p6; p6 = p6 + t.y + c; c = select(0u, 1u, p6 < old || (c == 1u && t.y == 0u && p6 == old));
         old = p6; p6 = p6 + h; c = c + select(0u, 1u, p6 < old);
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { p13 = p13 + c; }
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        p13 = p13 + c;
     }
 
     // Reduce p12
     h = p12; p12 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p4; p4 = p4 + t.x; c = select(0u, 1u, p4 < old);
         old = p5; p5 = p5 + t.y + c; c = select(0u, 1u, p5 < old || (c == 1u && t.y == 0u && p5 == old));
         old = p5; p5 = p5 + h; c = c + select(0u, 1u, p5 < old);
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { p12 = p12 + c; }
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        p12 = p12 + c;
     }
 
     // Reduce p11
     h = p11; p11 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p3; p3 = p3 + t.x; c = select(0u, 1u, p3 < old);
         old = p4; p4 = p4 + t.y + c; c = select(0u, 1u, p4 < old || (c == 1u && t.y == 0u && p4 == old));
         old = p4; p4 = p4 + h; c = c + select(0u, 1u, p4 < old);
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { p11 = p11 + c; }
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        p11 = p11 + c;
     }
 
     // Reduce p10
     h = p10; p10 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p2; p2 = p2 + t.x; c = select(0u, 1u, p2 < old);
         old = p3; p3 = p3 + t.y + c; c = select(0u, 1u, p3 < old || (c == 1u && t.y == 0u && p3 == old));
         old = p3; p3 = p3 + h; c = c + select(0u, 1u, p3 < old);
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { p10 = p10 + c; }
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        p10 = p10 + c;
     }
 
     // Reduce p9
     h = p9; p9 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p1; p1 = p1 + t.x; c = select(0u, 1u, p1 < old);
         old = p2; p2 = p2 + t.y + c; c = select(0u, 1u, p2 < old || (c == 1u && t.y == 0u && p2 == old));
         old = p2; p2 = p2 + h; c = c + select(0u, 1u, p2 < old);
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { p9 = p9 + c; }
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        p9 = p9 + c;
     }
 
     // Reduce p8 (first pass)
     h = p8; p8 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p0; p0 = p0 + t.x; c = select(0u, 1u, p0 < old);
         old = p1; p1 = p1 + t.y + c; c = select(0u, 1u, p1 < old || (c == 1u && t.y == 0u && p1 == old));
         old = p1; p1 = p1 + h; c = c + select(0u, 1u, p1 < old);
-        if (c > 0u) { old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old); }
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { p8 = p8 + c; }
+        old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old);
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        p8 = p8 + c;
     }
 
     // Reduce p8 (second pass if needed)
     h = p8; p8 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p0; p0 = p0 + t.x; c = select(0u, 1u, p0 < old);
         old = p1; p1 = p1 + t.y + c; c = select(0u, 1u, p1 < old || (c == 1u && t.y == 0u && p1 == old));
         old = p1; p1 = p1 + h; c = c + select(0u, 1u, p1 < old);
-        if (c > 0u) { old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old); }
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; }
+        old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old);
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c;
     }
 
     var result: array<u32, 8>;
@@ -505,92 +571,92 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     t = mul32(a[0], a[0]);
     p0 = t.x;
     old = p1; p1 = p1 + t.y; c = select(0u, 1u, p1 < old);
-    if (c > 0u) { old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old); }
-    if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-    if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-    if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-    if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-    if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-    if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-    if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old);
+    old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+    old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+    old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+    old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+    old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+    old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+    old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+    old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+    old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[1]²
     t = mul32(a[1], a[1]);
     old = p2; p2 = p2 + t.x; c = select(0u, 1u, p2 < old);
     s = p3 + t.y; hi = select(0u, 1u, s < p3); s = s + c; hi = hi + select(0u, 1u, s < c); p3 = s; c = hi;
-    if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-    if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-    if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-    if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-    if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-    if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+    old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+    old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+    old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+    old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+    old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+    old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+    old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[2]²
     t = mul32(a[2], a[2]);
     old = p4; p4 = p4 + t.x; c = select(0u, 1u, p4 < old);
     s = p5 + t.y; hi = select(0u, 1u, s < p5); s = s + c; hi = hi + select(0u, 1u, s < c); p5 = s; c = hi;
-    if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-    if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-    if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-    if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+    old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+    old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+    old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+    old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+    old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[3]²
     t = mul32(a[3], a[3]);
     old = p6; p6 = p6 + t.x; c = select(0u, 1u, p6 < old);
     s = p7 + t.y; hi = select(0u, 1u, s < p7); s = s + c; hi = hi + select(0u, 1u, s < c); p7 = s; c = hi;
-    if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-    if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+    old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+    old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+    old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[4]²
     t = mul32(a[4], a[4]);
     old = p8; p8 = p8 + t.x; c = select(0u, 1u, p8 < old);
     s = p9 + t.y; hi = select(0u, 1u, s < p9); s = s + c; hi = hi + select(0u, 1u, s < c); p9 = s; c = hi;
-    if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-    if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+    old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[5]²
     t = mul32(a[5], a[5]);
     old = p10; p10 = p10 + t.x; c = select(0u, 1u, p10 < old);
     s = p11 + t.y; hi = select(0u, 1u, s < p11); s = s + c; hi = hi + select(0u, 1u, s < c); p11 = s; c = hi;
-    if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-    if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+    old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[6]²
     t = mul32(a[6], a[6]);
     old = p12; p12 = p12 + t.x; c = select(0u, 1u, p12 < old);
     s = p13 + t.y; hi = select(0u, 1u, s < p13); s = s + c; hi = hi + select(0u, 1u, s < c); p13 = s; c = hi;
-    if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-    if (c > 0u) { p15 = p15 + c; }
+    old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+    p15 = p15 + c;
 
     // a[7]²
     t = mul32(a[7], a[7]);
@@ -606,144 +672,144 @@ fn fe_square(a: array<u32, 8>) -> array<u32, 8> {
     // Reduce p15
     h = p15; p15 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p7; p7 = p7 + t.x; c = select(0u, 1u, p7 < old);
         old = p8; p8 = p8 + t.y + c; c = select(0u, 1u, p8 < old || (c == 1u && t.y == 0u && p8 == old));
         old = p8; p8 = p8 + h; c = c + select(0u, 1u, p8 < old);
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-        if (c > 0u) { old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old); }
-        if (c > 0u) { p15 = p15 + c; }
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+        old = p14; p14 = p14 + c; c = select(0u, 1u, p14 < old);
+        p15 = p15 + c;
     }
 
     // Reduce p14
     h = p14; p14 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p6; p6 = p6 + t.x; c = select(0u, 1u, p6 < old);
         old = p7; p7 = p7 + t.y + c; c = select(0u, 1u, p7 < old || (c == 1u && t.y == 0u && p7 == old));
         old = p7; p7 = p7 + h; c = c + select(0u, 1u, p7 < old);
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old); }
-        if (c > 0u) { p14 = p14 + c; }
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        old = p13; p13 = p13 + c; c = select(0u, 1u, p13 < old);
+        p14 = p14 + c;
     }
 
     // Reduce p13
     h = p13; p13 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p5; p5 = p5 + t.x; c = select(0u, 1u, p5 < old);
         old = p6; p6 = p6 + t.y + c; c = select(0u, 1u, p6 < old || (c == 1u && t.y == 0u && p6 == old));
         old = p6; p6 = p6 + h; c = c + select(0u, 1u, p6 < old);
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old); }
-        if (c > 0u) { p13 = p13 + c; }
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        old = p12; p12 = p12 + c; c = select(0u, 1u, p12 < old);
+        p13 = p13 + c;
     }
 
     // Reduce p12
     h = p12; p12 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p4; p4 = p4 + t.x; c = select(0u, 1u, p4 < old);
         old = p5; p5 = p5 + t.y + c; c = select(0u, 1u, p5 < old || (c == 1u && t.y == 0u && p5 == old));
         old = p5; p5 = p5 + h; c = c + select(0u, 1u, p5 < old);
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old); }
-        if (c > 0u) { p12 = p12 + c; }
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        old = p11; p11 = p11 + c; c = select(0u, 1u, p11 < old);
+        p12 = p12 + c;
     }
 
     // Reduce p11
     h = p11; p11 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p3; p3 = p3 + t.x; c = select(0u, 1u, p3 < old);
         old = p4; p4 = p4 + t.y + c; c = select(0u, 1u, p4 < old || (c == 1u && t.y == 0u && p4 == old));
         old = p4; p4 = p4 + h; c = c + select(0u, 1u, p4 < old);
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old); }
-        if (c > 0u) { p11 = p11 + c; }
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        old = p10; p10 = p10 + c; c = select(0u, 1u, p10 < old);
+        p11 = p11 + c;
     }
 
     // Reduce p10
     h = p10; p10 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p2; p2 = p2 + t.x; c = select(0u, 1u, p2 < old);
         old = p3; p3 = p3 + t.y + c; c = select(0u, 1u, p3 < old || (c == 1u && t.y == 0u && p3 == old));
         old = p3; p3 = p3 + h; c = c + select(0u, 1u, p3 < old);
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old); }
-        if (c > 0u) { p10 = p10 + c; }
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        old = p9; p9 = p9 + c; c = select(0u, 1u, p9 < old);
+        p10 = p10 + c;
     }
 
     // Reduce p9
     h = p9; p9 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p1; p1 = p1 + t.x; c = select(0u, 1u, p1 < old);
         old = p2; p2 = p2 + t.y + c; c = select(0u, 1u, p2 < old || (c == 1u && t.y == 0u && p2 == old));
         old = p2; p2 = p2 + h; c = c + select(0u, 1u, p2 < old);
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old); }
-        if (c > 0u) { p9 = p9 + c; }
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        old = p8; p8 = p8 + c; c = select(0u, 1u, p8 < old);
+        p9 = p9 + c;
     }
 
     // Reduce p8 (first pass)
     h = p8; p8 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p0; p0 = p0 + t.x; c = select(0u, 1u, p0 < old);
         old = p1; p1 = p1 + t.y + c; c = select(0u, 1u, p1 < old || (c == 1u && t.y == 0u && p1 == old));
         old = p1; p1 = p1 + h; c = c + select(0u, 1u, p1 < old);
-        if (c > 0u) { old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old); }
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old); }
-        if (c > 0u) { p8 = p8 + c; }
+        old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old);
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c; c = select(0u, 1u, p7 < old);
+        p8 = p8 + c;
     }
 
     // Reduce p8 (second pass if needed)
     h = p8; p8 = 0u;
     if (h != 0u) {
-        t = mul32(h, 977u);
+        t = mul_977(h);
         old = p0; p0 = p0 + t.x; c = select(0u, 1u, p0 < old);
         old = p1; p1 = p1 + t.y + c; c = select(0u, 1u, p1 < old || (c == 1u && t.y == 0u && p1 == old));
         old = p1; p1 = p1 + h; c = c + select(0u, 1u, p1 < old);
-        if (c > 0u) { old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old); }
-        if (c > 0u) { old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old); }
-        if (c > 0u) { old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old); }
-        if (c > 0u) { old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old); }
-        if (c > 0u) { old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old); }
-        if (c > 0u) { old = p7; p7 = p7 + c; }
+        old = p2; p2 = p2 + c; c = select(0u, 1u, p2 < old);
+        old = p3; p3 = p3 + c; c = select(0u, 1u, p3 < old);
+        old = p4; p4 = p4 + c; c = select(0u, 1u, p4 < old);
+        old = p5; p5 = p5 + c; c = select(0u, 1u, p5 < old);
+        old = p6; p6 = p6 + c; c = select(0u, 1u, p6 < old);
+        old = p7; p7 = p7 + c;
     }
 
     var result: array<u32, 8>;
