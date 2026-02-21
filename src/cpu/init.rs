@@ -5,7 +5,7 @@ use crate::crypto::{Point, U256};
 use crate::gpu::{GpuAffinePoint, GpuKangaroo};
 use crate::math::negate_256_be;
 use anyhow::Result;
-use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+use k256::elliptic_curve::ops::Reduce;
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
 use rayon::prelude::*;
@@ -191,8 +191,8 @@ pub fn initialize_kangaroos(
 
             let (point, dist) = match ktype {
                 0 => init_tame_kangaroo_at_offset(start, offset, base_point),
-                1 => init_wild_kangaroo_at_offset(pubkey, offset, range_middle),
-                _ => init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle),
+                1 => init_wild_kangaroo_at_offset(pubkey, offset, range_middle, base_point),
+                _ => init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle, base_point),
             };
 
             let gpu_point = affine_to_gpu(&point);
@@ -281,6 +281,7 @@ fn init_wild_kangaroo_at_offset(
     pubkey: &Point,
     raw_offset: u128,
     range_middle: u128,
+    base_point: &ProjectivePoint,
 ) -> (k256::AffinePoint, [u32; 8]) {
     // Center the offset: map [0, range) to [-range/2, range/2)
     let centered_offset = raw_offset as i128 - range_middle as i128;
@@ -292,7 +293,7 @@ fn init_wild_kangaroo_at_offset(
 
         let scalar_uint = K256U256::from_be_slice(&offset_bytes);
         let scalar = Scalar::reduce(scalar_uint);
-        let offset_point = ProjectivePoint::mul_by_generator(&scalar);
+        let offset_point = *base_point * scalar;
         let wild_point = *pubkey + offset_point;
 
         (wild_point.to_affine(), scalar_be_to_limbs(&offset_bytes))
@@ -304,7 +305,7 @@ fn init_wild_kangaroo_at_offset(
 
         let scalar_uint = K256U256::from_be_slice(&offset_bytes);
         let scalar = Scalar::reduce(scalar_uint);
-        let offset_point = ProjectivePoint::mul_by_generator(&scalar);
+        let offset_point = *base_point * scalar;
         let wild_point = *pubkey - offset_point;
 
         // Store negative offset as two's complement
@@ -337,7 +338,12 @@ mod tests {
         let offset = 1000u128;
 
         // Initialize wild kangaroo with negated pubkey
-        let (point, dist) = init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle);
+        let (point, dist) = init_wild_kangaroo_at_offset(
+            &neg_pubkey,
+            offset,
+            range_middle,
+            &ProjectivePoint::GENERATOR,
+        );
 
         // Convert to GPU format to check x and dist
         let gpu_point = affine_to_gpu(&point);
