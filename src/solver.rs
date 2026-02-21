@@ -362,13 +362,14 @@ impl KangarooSolver {
         self.total_ops += (self.num_kangaroos as u64) * (self.steps_per_call as u64);
 
         if self.total_ops % 10_000_000 < (self.num_kangaroos as u64 * self.steps_per_call as u64) {
-            let (tame, wild) = self.dp_table.count_by_type();
+            let (tame, w1, w2) = self.dp_table.count_by_type();
             tracing::info!(
-                "Ops: {}M | DPs: {} ({} tame, {} wild)",
+                "Ops: {}M | DPs: {} ({} tame, {} wild1, {} wild2)",
                 self.total_ops / 1_000_000,
                 self.dp_table.total_dps(),
                 tame,
-                wild
+                w1,
+                w2
             );
         }
 

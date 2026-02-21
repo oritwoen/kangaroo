@@ -9,6 +9,7 @@ use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
 use rayon::prelude::*;
+use std::ops::Neg;
 
 /// Generate jump table with precomputed points.
 ///
@@ -91,14 +92,20 @@ pub fn generate_jump_table(range_bits: u32) -> (Vec<GpuAffinePoint>, Vec<[u32; 8
 
 /// Initialize kangaroo positions.
 ///
-/// Half are "tame" (start at known point), half are "wild" (start near pubkey).
+/// Split into three sets: tame (ktype=0), wild₁ (ktype=1), wild₂ (ktype=2).
+/// Wild₂ uses the negated public key for cross-wild collision detection.
 pub fn initialize_kangaroos(
     pubkey: &Point,
     start: &U256,
     range_bits: u32,
     num_kangaroos: u32,
 ) -> Result<Vec<GpuKangaroo>> {
-    let half = num_kangaroos / 2;
+    anyhow::ensure!(
+        num_kangaroos >= 3,
+        "Multi-set requires at least 3 kangaroos"
+    );
+
+    let one_third = num_kangaroos / 3;
 
     // Handle the case where range_bits is 128 or more (u128 overflow)
     // Actually our u128 math might overflow if range_bits=128, but usually it is <128.
@@ -157,11 +164,19 @@ pub fn initialize_kangaroos(
         range_size
     };
 
+    let neg_pubkey = pubkey.neg();
+
     // Parallel initialization with rayon
     let kangaroos: Vec<GpuKangaroo> = (0..num_kangaroos)
         .into_par_iter()
         .map(|i| {
-            let is_tame = i < half;
+            let ktype = if i < one_third {
+                0 // tame
+            } else if i < 2 * one_third {
+                1 // wild₁
+            } else {
+                2 // wild₂
+            };
 
             // Grid-based offset + small random jitter
             let grid_pos = (i as u128) * grid_delta;
@@ -170,10 +185,10 @@ pub fn initialize_kangaroos(
 
             let offset = (grid_pos + jitter) % range_size;
 
-            let (point, dist) = if is_tame {
-                init_tame_kangaroo_at_offset(start, offset)
-            } else {
-                init_wild_kangaroo_at_offset(pubkey, offset, range_middle)
+            let (point, dist) = match ktype {
+                0 => init_tame_kangaroo_at_offset(start, offset),
+                1 => init_wild_kangaroo_at_offset(pubkey, offset, range_middle),
+                _ => init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle),
             };
 
             let gpu_point = affine_to_gpu(&point);
@@ -182,7 +197,7 @@ pub fn initialize_kangaroos(
                 x: gpu_point.x,
                 y: gpu_point.y,
                 dist,
-                ktype: if is_tame { 0 } else { 1 },
+                ktype,
                 is_active: 1,
                 cycle_counter: 0,
                 repeat_count: 0,
@@ -290,5 +305,77 @@ fn init_wild_kangaroo_at_offset(
             wild_point.to_affine(),
             scalar_be_to_limbs(&neg_offset_bytes),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wild2_init_with_negated_pubkey() {
+        // Use puzzle 20 pubkey from test fixtures
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+
+        // Negate the pubkey
+        let neg_pubkey = pubkey.neg();
+
+        // Use range_bits=20, so range_middle = 2^19
+        let range_bits = 20u32;
+        let range_middle = 1u128 << (range_bits - 1);
+
+        // Use a small offset
+        let offset = 1000u128;
+
+        // Initialize wild kangaroo with negated pubkey
+        let (point, dist) = init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle);
+
+        // Convert to GPU format to check x and dist
+        let gpu_point = affine_to_gpu(&point);
+
+        // Assert that x has at least one non-zero element
+        assert!(
+            gpu_point.x.iter().any(|&x| x != 0),
+            "GPU point x should have at least one non-zero element"
+        );
+
+        // Assert that dist has at least one non-zero element
+        assert!(
+            dist.iter().any(|&d| d != 0),
+            "Distance should have at least one non-zero element"
+        );
+    }
+
+    #[test]
+    fn test_three_set_distribution() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let range_bits = 20u32;
+        let num_kangaroos = 4096u32;
+
+        let kangaroos = initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos).unwrap();
+        assert_eq!(kangaroos.len(), num_kangaroos as usize);
+
+        let tame = kangaroos.iter().filter(|k| k.ktype == 0).count();
+        let wild1 = kangaroos.iter().filter(|k| k.ktype == 1).count();
+        let wild2 = kangaroos.iter().filter(|k| k.ktype == 2).count();
+
+        // 4096 / 3 = 1365 remainder 1 → tame=1365, wild₁=1365, wild₂=1366
+        assert_eq!(tame, 1365);
+        assert_eq!(wild1, 1365);
+        assert_eq!(wild2, 1366);
+        assert_eq!(tame + wild1 + wild2, num_kangaroos as usize);
+    }
+
+    #[test]
+    fn test_minimum_kangaroo_count() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let result = initialize_kangaroos(&pubkey, &start, 20, 2);
+        assert!(result.is_err(), "Should fail for num_kangaroos < 3");
+        assert!(result.unwrap_err().to_string().contains("at least 3"));
     }
 }

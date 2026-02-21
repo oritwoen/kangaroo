@@ -8,6 +8,18 @@ use std::collections::HashMap;
 
 const MAX_DISTINGUISHED_POINTS: usize = 65_536;
 
+/// SCALAR_HALF = (n+1)/2 where n is secp256k1 order
+/// Property: 2 × SCALAR_HALF ≡ 1 (mod n)
+/// Used for resolving wild₁↔wild₂ collisions via k = (d₂ - d₁) × SCALAR_HALF
+pub(crate) fn scalar_half() -> Scalar {
+    let bytes = [
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b,
+        0x20, 0xa1,
+    ];
+    Scalar::reduce(K256U256::from_be_slice(&bytes))
+}
+
 /// Stored DP with full affine X for proper verification
 #[derive(Clone)]
 struct StoredDP {
@@ -44,7 +56,15 @@ impl DPTable {
         // Debug: log first few DPs (only with RUST_LOG=debug)
         let total = self.total_dps();
         if total < 20 {
-            let ktype_str = if dp.ktype == 0 { "tame" } else { "wild" };
+            let ktype_str = match dp.ktype {
+                0 => "tame",
+                1 => "wild1",
+                2 => "wild2",
+                _ => {
+                    tracing::warn!("DP[{}] unknown ktype={}, skipping", total, dp.ktype);
+                    return None;
+                }
+            };
             tracing::debug!(
                 "DP[{}] {}: x[0..2]=[{:08x},{:08x}] dist[0..2]=[{:08x},{:08x}] affine_x[0..4]={}",
                 total,
@@ -80,10 +100,11 @@ impl DPTable {
                 // Same affine X - check if tame vs wild collision
                 if existing.ktype == dp.ktype {
                     // Same type collision - log for debugging
-                    let ktype_str = if dp.ktype == 0 {
-                        "tame-tame"
-                    } else {
-                        "wild-wild"
+                    let ktype_str = match dp.ktype {
+                        0 => "tame-tame",
+                        1 => "wild1-wild1",
+                        2 => "wild2-wild2",
+                        _ => "unknown-unknown",
                     };
                     tracing::debug!(
                         "Same-type collision ({}): affine_x={}",
@@ -92,6 +113,21 @@ impl DPTable {
                     );
                     return None;
                 }
+
+                if existing.ktype != 0 && dp.ktype != 0 && existing.ktype != dp.ktype {
+                    let (d1, d2) = if existing.ktype == 1 {
+                        (existing.dist.as_slice(), dist_bytes.as_ref())
+                    } else {
+                        (dist_bytes.as_ref(), existing.dist.as_slice())
+                    };
+                    if let Some(key) = compute_candidate_keys_cross_wild(d1, d2, &self.pubkey) {
+                        tracing::info!("Cross-wild collision found! Key: 0x{}", hex::encode(&key));
+                        return Some(key);
+                    }
+                    tracing::debug!("Spurious cross-wild collision: no candidate key verifies");
+                    return None;
+                }
+
                 let (tame_dist_bytes, wild_dist_bytes) = if existing.ktype == 0 {
                     (existing.dist.as_slice(), dist_bytes.as_ref())
                 } else {
@@ -153,19 +189,21 @@ impl DPTable {
         self.total_dps
     }
 
-    pub fn count_by_type(&self) -> (usize, usize) {
-        let mut tame = 0;
-        let mut wild = 0;
+    pub fn count_by_type(&self) -> (usize, usize, usize) {
+        let mut tame = 0usize;
+        let mut w1 = 0usize;
+        let mut w2 = 0usize;
         for list in self.table.values() {
             for dp in list {
-                if dp.ktype == 0 {
-                    tame += 1;
-                } else {
-                    wild += 1;
+                match dp.ktype {
+                    0 => tame += 1,
+                    1 => w1 += 1,
+                    2 => w2 += 1,
+                    _ => {} // silently skip unknown types
                 }
             }
         }
-        (tame, wild)
+        (tame, w1, w2)
     }
 }
 
@@ -255,6 +293,32 @@ fn compute_candidate_keys(start: &[u8; 32], tame_dist: &[u8], wild_dist: &[u8]) 
     keys
 }
 
+fn compute_candidate_keys_cross_wild(
+    d1_bytes: &[u8],
+    d2_bytes: &[u8],
+    pubkey: &ProjectivePoint,
+) -> Option<Vec<u8>> {
+    let d1_pair = distance_scalar_pair(&pad_to_32(d1_bytes));
+    let d2_pair = distance_scalar_pair(&pad_to_32(d2_bytes));
+    let half = scalar_half();
+
+    for &d1 in &d1_pair {
+        for &d2 in &d2_pair {
+            let k_diff = (d2 - d1) * half;
+            let candidates = [k_diff, Scalar::ZERO - k_diff];
+
+            for candidate in &candidates {
+                let key_bytes = scalar_to_key_bytes(candidate);
+                if verify_key(&key_bytes, pubkey) {
+                    return Some(key_bytes);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
     let mut result = [0u8; 32];
     let len = bytes.len().min(32);
@@ -327,7 +391,7 @@ fn subtract_256(a: &[u8], b: &[u8], result: &mut [u8]) {
 mod tests {
     use super::DPTable;
     use super::MAX_DISTINGUISHED_POINTS;
-    use crate::crypto::verify_key;
+    use crate::crypto::{parse_pubkey, verify_key};
     use crate::gpu::GpuDistinguishedPoint;
     use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
     use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -943,6 +1007,90 @@ mod tests {
         assert!(
             result.is_none(),
             "Should return None when no formula produces valid key"
+        );
+    }
+
+    #[test]
+    fn test_scalar_half_inverse_of_two() {
+        // Verify that 2 × SCALAR_HALF ≡ 1 (mod n)
+        let half = super::scalar_half();
+        let two = scalar_from_u64(2);
+        let product = two * half;
+        assert_eq!(
+            product,
+            Scalar::ONE,
+            "2 × SCALAR_HALF should equal 1 (mod n)"
+        );
+    }
+
+    #[test]
+    fn test_scalar_half_value() {
+        // Verify SCALAR_HALF has the correct byte representation
+        let half = super::scalar_half();
+        let bytes = half.to_bytes();
+        let expected = [
+            0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46,
+            0x68, 0x1b, 0x20, 0xa1,
+        ];
+        assert_eq!(
+            bytes.as_slice(),
+            &expected,
+            "SCALAR_HALF bytes should match expected value"
+        );
+    }
+
+    #[test]
+    fn test_cross_wild_collision_resolves() {
+        let pubkey =
+            parse_pubkey("033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c")
+                .unwrap();
+        let k = scalar_from_u64(0x0d2c55);
+
+        let d1 = scalar_from_u64(123_456);
+        let d2 = d1 + (k + k);
+        let collision_point = ProjectivePoint::mul_by_generator(&(k + d1));
+        assert_eq!(
+            collision_point,
+            ProjectivePoint::mul_by_generator(&(-k + d2))
+        );
+
+        let mut table = DPTable::new([0u8; 32], pubkey);
+
+        let wild1_dp = make_real_dp(&collision_point, &d1, 1);
+        assert!(table.insert_and_check(wild1_dp).is_none());
+
+        let wild2_dp = make_real_dp(&collision_point, &d2, 2);
+        let result = table.insert_and_check(wild2_dp);
+        assert!(
+            result.is_some(),
+            "wild1↔wild2 collision should resolve to a valid key"
+        );
+        assert!(verify_key(&result.clone().unwrap(), &table.pubkey));
+        assert_eq!(result.unwrap(), super::scalar_to_key_bytes(&k));
+    }
+
+    #[test]
+    fn test_cross_wild_no_false_positive() {
+        let wrong_pubkey =
+            parse_pubkey("031a746c78f72754e0be046186df8a20cdce5c79b2eda76013c647af08d306e49e")
+                .unwrap();
+        let k = scalar_from_u64(0x0d2c55);
+
+        let d1 = scalar_from_u64(123_456);
+        let d2 = d1 + (k + k);
+        let collision_point = ProjectivePoint::mul_by_generator(&(k + d1));
+
+        let mut table = DPTable::new([0u8; 32], wrong_pubkey);
+
+        let wild1_dp = make_real_dp(&collision_point, &d1, 1);
+        assert!(table.insert_and_check(wild1_dp).is_none());
+
+        let wild2_dp = make_real_dp(&collision_point, &d2, 2);
+        let result = table.insert_and_check(wild2_dp);
+        assert!(
+            result.is_none(),
+            "cross-wild candidate formulas should not accept wrong pubkey"
         );
     }
 }
