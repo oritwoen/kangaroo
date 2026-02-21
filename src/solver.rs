@@ -163,7 +163,7 @@ impl KangarooSolver {
         capped_steps.min(optimal_steps)
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     /// Create a solver with existing pipeline (no pipeline creation overhead)
     fn new_with_pipeline(
         ctx: &GpuContext,
@@ -238,6 +238,7 @@ impl KangarooSolver {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_internal(
         ctx: GpuContext,
         pubkey: Point,

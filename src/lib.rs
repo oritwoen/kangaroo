@@ -398,6 +398,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow!("Invalid modular constraint: {e}"))?;
 
+    let effective_range = constraint
+        .as_ref()
+        .map(|c| c.effective_range_bits)
+        .unwrap_or(range_bits);
+
     if args.cpu {
         if !args.quiet && !args.json {
             info!("Mode: CPU (Software Solver)");
@@ -406,7 +411,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let dp_bits = args
             .dp_bits
             .map(|v| v.clamp(8, 20))
-            .unwrap_or_else(|| (range_bits / 2).saturating_sub(2).clamp(8, 20));
+            .unwrap_or_else(|| (effective_range / 2).saturating_sub(2).clamp(8, 20));
 
         if !args.quiet && !args.json {
             info!("DP bits: {}", dp_bits);
@@ -438,7 +443,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             solve_base_point,
         );
 
-        let expected_ops = (1u128 << (range_bits / 2)) as u64;
+        let expected_ops = (1u128 << (effective_range / 2)) as u64;
         let pb = if args.quiet || args.json {
             ProgressBar::hidden()
         } else {
@@ -469,7 +474,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 let total_ops = solver.total_ops();
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
-                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
+                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -477,7 +482,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     unit: "ops/s".to_string(),
                     metadata: Metadata {
                         device: "cpu".to_string(),
-                        range_bits,
+                        range_bits: effective_range,
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
@@ -494,7 +499,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
                 info!(
                     "K-factor: {:.3}",
-                    solver.total_ops() as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                    solver.total_ops() as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
                 );
             }
 
@@ -518,7 +523,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
-        let auto_dp = (range_bits / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
+        let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
         auto_dp.clamp(8, 40)
     });
 
@@ -542,7 +547,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    let expected_ops = (1u128 << (range_bits / 2)) as u64;
+    let expected_ops = (1u128 << (effective_range / 2)) as u64;
     let pb = if args.quiet || args.json {
         ProgressBar::hidden()
     } else {
@@ -591,7 +596,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             if args.json {
                 let time_seconds = duration.as_secs_f64();
                 let rate = total_ops as f64 / time_seconds;
-                let k_factor = total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0);
+                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
 
                 let result = BenchmarkResult {
                     metric: "hash_rate".to_string(),
@@ -599,7 +604,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     unit: "ops/s".to_string(),
                     metadata: Metadata {
                         device: device_name,
-                        range_bits,
+                        range_bits: effective_range,
                         algorithm: "pollard_kangaroo".to_string(),
                         total_ops,
                         time_seconds,
@@ -616,7 +621,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 info!("Time elapsed: {:.2}s", duration.as_secs_f64());
                 info!(
                     "K-factor: {:.3}",
-                    total_ops as f64 / (2.0_f64).powf(range_bits as f64 / 2.0)
+                    total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
                 );
             }
 
