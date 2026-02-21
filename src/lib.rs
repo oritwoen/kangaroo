@@ -444,7 +444,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             solve_base_point,
         );
 
-        let expected_ops = (1u128 << (effective_range / 2)).min(u64::MAX as u128) as u64;
+        let expected_ops = 1u128
+            .checked_shl((effective_range / 2) as u32)
+            .unwrap_or(u64::MAX as u128)
+            .min(u64::MAX as u128) as u64;
         let pb = if args.quiet || args.json {
             ProgressBar::hidden()
         } else {
@@ -548,7 +551,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    let expected_ops = (1u128 << (effective_range / 2)).min(u64::MAX as u128) as u64;
+    let expected_ops = 1u128
+        .checked_shl((effective_range / 2) as u32)
+        .unwrap_or(u64::MAX as u128)
+        .min(u64::MAX as u128) as u64;
     let pb = if args.quiet || args.json {
         ProgressBar::hidden()
     } else {
