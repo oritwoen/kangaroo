@@ -17,7 +17,7 @@ mod provider;
 mod solver;
 
 pub use cpu::CpuKangarooSolver;
-pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, Point};
+pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point};
 pub use gpu_crypto::{GpuBackend, GpuContext};
 pub use solver::KangarooSolver;
 
@@ -99,6 +99,14 @@ pub struct Args {
     /// Save benchmark results to BENCHMARKS.md (opt-in)
     #[arg(long)]
     save_benchmarks: bool,
+
+    /// Modular step: search only for x ≡ mod_start (mod mod_step) [default: 1 = no constraint]
+    #[arg(long, default_value = "1")]
+    mod_step: String,
+
+    /// Modular residue: class residue for constraint (0 ≤ R < M) [default: 0]
+    #[arg(long, default_value = "0")]
+    mod_start: String,
 }
 
 #[derive(Serialize)]
@@ -608,5 +616,46 @@ mod tests {
         // Starting at 0x20... with range 65 bits should fit exactly
         let pr = make_provider_result("20000000000000000", "40000000000000000");
         assert!(validate_search_bounds("20000000000000000", 65, &pr).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_mod_flags_default() {
+        // Verify that mod_step and mod_start fields exist with correct defaults
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+        ])
+        .expect("Failed to parse args");
+
+        assert_eq!(args.mod_step, "1", "mod_step should default to '1'");
+        assert_eq!(args.mod_start, "0", "mod_start should default to '0'");
+    }
+
+    #[test]
+    fn test_cli_mod_flags_custom() {
+        // Verify that custom mod_step and mod_start values are parsed correctly
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+            "--mod-step",
+            "7",
+            "--mod-start",
+            "3",
+        ])
+        .expect("Failed to parse args");
+
+        assert_eq!(args.mod_step, "7", "mod_step should be '7'");
+        assert_eq!(args.mod_start, "3", "mod_start should be '3'");
     }
 }
