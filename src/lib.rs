@@ -18,7 +18,9 @@ mod provider;
 mod solver;
 
 pub use cpu::CpuKangarooSolver;
-pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point};
+pub use crypto::{
+    full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point,
+};
 pub use gpu_crypto::{GpuBackend, GpuContext};
 pub use modular::ModConstraint;
 pub use solver::KangarooSolver;
@@ -26,13 +28,13 @@ pub use solver::KangarooSolver;
 use anyhow::anyhow;
 use clap::Parser;
 use indicatif::ProgressBar;
+use k256::elliptic_curve::ops::Reduce;
+use k256::U256 as K256U256;
+use k256::{ProjectivePoint, Scalar};
 #[cfg(feature = "boha")]
 use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
-use k256::elliptic_curve::ops::Reduce;
-use k256::{ProjectivePoint, Scalar};
-use k256::U256 as K256U256;
 use tracing::{error, info};
 
 /// Pollard's Kangaroo ECDLP solver for secp256k1
@@ -424,12 +426,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             None => {
                 let mut start_be = start;
                 start_be.reverse();
-                (
-                    pubkey,
-                    start_be,
-                    range_bits,
-                    ProjectivePoint::GENERATOR,
-                )
+                (pubkey, start_be, range_bits, ProjectivePoint::GENERATOR)
             }
         };
 
@@ -540,7 +537,9 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             num_k,
             c.base_point,
         )?,
-        None => solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?,
+        None => {
+            solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+        }
     };
 
     let expected_ops = (1u128 << (range_bits / 2)) as u64;
