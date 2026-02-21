@@ -15,7 +15,10 @@ use std::ops::Neg;
 ///
 /// Uses FNV-1a pseudo-random generation (Strategy S2) for better distribution
 /// than simple powers of 2.
-pub fn generate_jump_table(range_bits: u32) -> (Vec<GpuAffinePoint>, Vec<[u32; 8]>) {
+pub fn generate_jump_table(
+    range_bits: u32,
+    base_point: &ProjectivePoint,
+) -> (Vec<GpuAffinePoint>, Vec<[u32; 8]>) {
     const TABLE_SIZE: usize = 256;
 
     let mut points = Vec::with_capacity(TABLE_SIZE);
@@ -75,7 +78,7 @@ pub fn generate_jump_table(range_bits: u32) -> (Vec<GpuAffinePoint>, Vec<[u32; 8
         // Compute point = scalar * G
         let scalar_uint = K256U256::from_be_slice(&scalar_bytes);
         let scalar = Scalar::reduce(scalar_uint);
-        let point = ProjectivePoint::mul_by_generator(&scalar);
+        let point = *base_point * scalar;
         let affine = point.to_affine();
 
         points.push(affine_to_gpu(&affine));
@@ -99,6 +102,7 @@ pub fn initialize_kangaroos(
     start: &U256,
     range_bits: u32,
     num_kangaroos: u32,
+    base_point: &ProjectivePoint,
 ) -> Result<Vec<GpuKangaroo>> {
     anyhow::ensure!(
         num_kangaroos >= 3,
@@ -186,7 +190,7 @@ pub fn initialize_kangaroos(
             let offset = (grid_pos + jitter) % range_size;
 
             let (point, dist) = match ktype {
-                0 => init_tame_kangaroo_at_offset(start, offset),
+                0 => init_tame_kangaroo_at_offset(start, offset, base_point),
                 1 => init_wild_kangaroo_at_offset(pubkey, offset, range_middle),
                 _ => init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle),
             };
@@ -227,7 +231,11 @@ fn hash_seed(index: u32, salt: u64) -> u128 {
 }
 
 /// Initialize a tame kangaroo at a specific offset from start
-fn init_tame_kangaroo_at_offset(start: &U256, offset: u128) -> (k256::AffinePoint, [u32; 8]) {
+fn init_tame_kangaroo_at_offset(
+    start: &U256,
+    offset: u128,
+    base_point: &ProjectivePoint,
+) -> (k256::AffinePoint, [u32; 8]) {
     // Convert start (U256) to Scalar
     // U256 is usually little-endian or we need to check crate::crypto::U256
     // In `tools/kangaroo/src/crypto/mod.rs` likely uses `k256::U256` or custom.
@@ -258,7 +266,7 @@ fn init_tame_kangaroo_at_offset(start: &U256, offset: u128) -> (k256::AffinePoin
     let sum = start_uint.wrapping_add(&offset_uint);
 
     let scalar = Scalar::reduce(sum);
-    let point = ProjectivePoint::mul_by_generator(&scalar);
+    let point = *base_point * scalar;
 
     // Store offset as dist (relative to start)
     // Distance tracks the offset from start, so it fits in u128 (range size)
@@ -355,7 +363,14 @@ mod tests {
         let range_bits = 20u32;
         let num_kangaroos = 4096u32;
 
-        let kangaroos = initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos).unwrap();
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &ProjectivePoint::GENERATOR,
+        )
+        .unwrap();
         assert_eq!(kangaroos.len(), num_kangaroos as usize);
 
         let tame = kangaroos.iter().filter(|k| k.ktype == 0).count();
@@ -374,7 +389,7 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 20, 2);
+        let result = initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR);
         assert!(result.is_err(), "Should fail for num_kangaroos < 3");
         assert!(result.unwrap_err().to_string().contains("at least 3"));
     }

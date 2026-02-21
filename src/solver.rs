@@ -10,6 +10,7 @@ use crate::gpu::{
 };
 use crate::math::create_dp_mask;
 use anyhow::{anyhow, Result};
+use k256::ProjectivePoint;
 use std::time::Instant;
 use tracing::info;
 
@@ -138,7 +139,8 @@ impl KangarooSolver {
         num_kangaroos: u32,
     ) -> Result<Self> {
         let jump_table_size = 256u32;
-        let (jump_points, jump_distances) = generate_jump_table(range_bits);
+        let (jump_points, jump_distances) =
+            generate_jump_table(range_bits, &ProjectivePoint::GENERATOR);
 
         // Create DP mask
         let dp_mask = create_dp_mask(dp_bits);
@@ -175,7 +177,13 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos = initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &ProjectivePoint::GENERATOR,
+        )?;
         upload_kangaroos(ctx, &buffers, &kangaroos)?;
 
         // Use start for key computation: k = start + tame_dist - wild_dist
@@ -220,7 +228,8 @@ impl KangarooSolver {
             info!("Generating jump table...");
         }
         let jump_table_size = 256u32;
-        let (jump_points, jump_distances) = generate_jump_table(range_bits);
+        let (jump_points, jump_distances) =
+            generate_jump_table(range_bits, &ProjectivePoint::GENERATOR);
         if verbose {
             info!("Jump table generated: {} entries", jump_table_size);
             for (i, dist) in jump_distances.iter().enumerate().take(4) {
@@ -272,7 +281,13 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos = initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &ProjectivePoint::GENERATOR,
+        )?;
         upload_kangaroos(&ctx, &buffers, &kangaroos)?;
 
         // Create solver instance
