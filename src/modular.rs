@@ -85,13 +85,16 @@ impl ModConstraint {
             *pubkey - r_g
         };
 
-        // j_start = ceil((start - R) / M) using u128 arithmetic
-        let start_lo = u128::from_le_bytes(start[0..16].try_into().unwrap());
-        let m_u128 = m_u64 as u128;
-        let diff = start_lo.saturating_sub(r_u64 as u128);
-        let j_start_u128 = (diff + m_u128 - 1) / m_u128;
-        let mut j_start = [0u8; 32];
-        j_start[0..16].copy_from_slice(&j_start_u128.to_le_bytes());
+        // j_start = ceil((start - R) / M) using full 256-bit arithmetic
+        // start is LE [u8; 32], M and R fit in u64
+        let diff = sub_u64_from_u256_le(start, r_u64);
+        let (quotient, remainder) = div_u256_le_by_u64(&diff, m_u64);
+        // ceil: if remainder > 0, add 1
+        let j_start = if remainder > 0 {
+            add_one_u256_le(&quotient)
+        } else {
+            quotient
+        };
 
         // effective_range_bits = range_bits - floor(log2(M)), minimum 1
         let log2_m = 63u32 - m_u64.leading_zeros();
@@ -106,6 +109,59 @@ impl ModConstraint {
             mod_start,
         }))
     }
+}
+
+/// Subtract a u64 from a 256-bit LE number, saturating at zero.
+fn sub_u64_from_u256_le(le_bytes: &[u8; 32], val: u64) -> [u8; 32] {
+    let mut result = *le_bytes;
+    let mut borrow = val as u128;
+    for chunk in 0..4 {
+        if borrow == 0 {
+            break;
+        }
+        let offset = chunk * 8;
+        let limb = u64::from_le_bytes(result[offset..offset + 8].try_into().unwrap()) as u128;
+        if limb >= borrow {
+            result[offset..offset + 8].copy_from_slice(&((limb - borrow) as u64).to_le_bytes());
+            borrow = 0;
+        } else {
+            let diff = (1u128 << 64) + limb - borrow;
+            result[offset..offset + 8].copy_from_slice(&(diff as u64).to_le_bytes());
+            borrow = 1;
+        }
+    }
+    result
+}
+
+/// Divide a 256-bit LE number by a u64. Returns (quotient_le, remainder).
+fn div_u256_le_by_u64(le_bytes: &[u8; 32], divisor: u64) -> ([u8; 32], u64) {
+    let mut result = [0u8; 32];
+    let mut remainder: u128 = 0;
+    let d = divisor as u128;
+    // Process from most significant limb to least significant
+    for chunk in (0..4).rev() {
+        let offset = chunk * 8;
+        let limb = u64::from_le_bytes(le_bytes[offset..offset + 8].try_into().unwrap()) as u128;
+        let combined = (remainder << 64) | limb;
+        result[offset..offset + 8].copy_from_slice(&((combined / d) as u64).to_le_bytes());
+        remainder = combined % d;
+    }
+    (result, remainder as u64)
+}
+
+/// Add 1 to a 256-bit LE number.
+fn add_one_u256_le(le_bytes: &[u8; 32]) -> [u8; 32] {
+    let mut result = *le_bytes;
+    for chunk in 0..4 {
+        let offset = chunk * 8;
+        let limb = u64::from_le_bytes(result[offset..offset + 8].try_into().unwrap());
+        let (sum, overflow) = limb.overflowing_add(1);
+        result[offset..offset + 8].copy_from_slice(&sum.to_le_bytes());
+        if !overflow {
+            break;
+        }
+    }
+    result
 }
 
 #[cfg(test)]
