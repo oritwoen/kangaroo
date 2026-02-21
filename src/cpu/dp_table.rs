@@ -115,7 +115,12 @@ impl DPTable {
                     } else {
                         (dist_bytes.as_ref(), existing.dist.as_slice())
                     };
-                    return compute_candidate_keys_cross_wild(d1, d2, &self.pubkey);
+                    if let Some(key) = compute_candidate_keys_cross_wild(d1, d2, &self.pubkey) {
+                        tracing::info!("Cross-wild collision found! Key: 0x{}", hex::encode(&key));
+                        return Some(key);
+                    }
+                    tracing::debug!("Spurious cross-wild collision: no candidate key verifies");
+                    return None;
                 }
 
                 let (tame_dist_bytes, wild_dist_bytes) = if existing.ktype == 0 {

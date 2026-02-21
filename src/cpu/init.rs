@@ -100,7 +100,7 @@ pub fn initialize_kangaroos(
     range_bits: u32,
     num_kangaroos: u32,
 ) -> Result<Vec<GpuKangaroo>> {
-    assert!(
+    anyhow::ensure!(
         num_kangaroos >= 3,
         "Multi-set requires at least 3 kangaroos"
     );
@@ -370,11 +370,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Multi-set requires at least 3 kangaroos")]
     fn test_minimum_kangaroo_count() {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let _ = initialize_kangaroos(&pubkey, &start, 20, 2);
+        let result = initialize_kangaroos(&pubkey, &start, 20, 2);
+        assert!(result.is_err(), "Should fail for num_kangaroos < 3");
+        assert!(result.unwrap_err().to_string().contains("at least 3"));
     }
 }

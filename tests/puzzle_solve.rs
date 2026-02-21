@@ -209,14 +209,14 @@ fn test_smoke_puzzle_20() {
     }
 }
 
-/// Verify that multi-set (3-type) kangaroos solve puzzle 20 correctly.
+/// Verify that multi-set (3-type) kangaroos solve puzzle 21 correctly.
 /// 3-set is now the default behavior — tame, wild₁, wild₂ — so this test
 /// confirms the solver works without any special flags.
 #[test]
-fn test_multi_set_puzzle_20() {
-    println!("\n=== Multi-Set Test: Puzzle 20 (3-type kangaroos) ===");
+fn test_multi_set_puzzle_21() {
+    println!("\n=== Multi-Set Test: Puzzle 21 (21-bit, 3-type kangaroos) ===");
 
-    let puzzle = get_smoke_test_puzzle();
+    let puzzle = get_test_puzzles()[1].clone();
     println!("  Target: {}", puzzle.pubkey);
     println!("  Range: {} bits", puzzle.range_bits);
     println!("  Expected: 0x{}", puzzle.expected_key);
