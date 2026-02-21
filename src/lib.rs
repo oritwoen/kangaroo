@@ -13,12 +13,14 @@ mod crypto;
 mod gpu;
 mod gpu_crypto;
 mod math;
+mod modular;
 mod provider;
 mod solver;
 
 pub use cpu::CpuKangarooSolver;
 pub use crypto::{full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point};
 pub use gpu_crypto::{GpuBackend, GpuContext};
+pub use modular::ModConstraint;
 pub use solver::KangarooSolver;
 
 use anyhow::anyhow;
@@ -28,7 +30,9 @@ use indicatif::ProgressBar;
 use num_bigint::BigUint;
 use serde::Serialize;
 use std::time::Instant;
-use k256::ProjectivePoint;
+use k256::elliptic_curve::ops::Reduce;
+use k256::{ProjectivePoint, Scalar};
+use k256::U256 as K256U256;
 use tracing::{error, info};
 
 /// Pollard's Kangaroo ECDLP solver for secp256k1
@@ -339,6 +343,19 @@ fn print_providers_list() {
     }
 }
 
+fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Vec<u8> {
+    let mut j_be = [0u8; 32];
+    let len = j_bytes.len().min(32);
+    j_be[32 - len..].copy_from_slice(&j_bytes[..len]);
+    let j_uint = K256U256::from_be_slice(&j_be);
+    let j_scalar = Scalar::reduce(j_uint);
+
+    let k_scalar = mod_start + mod_step * j_scalar;
+    let k_be = k_scalar.to_bytes();
+    let first_nonzero = k_be.iter().position(|&x| x != 0).unwrap_or(31);
+    k_be[first_nonzero..].to_vec()
+}
+
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
@@ -370,6 +387,15 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let start = crypto::parse_hex_u256(&params.start_str)?;
     let range_bits = params.range_bits;
 
+    let constraint = crate::modular::ModConstraint::new(
+        &args.mod_step,
+        &args.mod_start,
+        &pubkey,
+        &start,
+        range_bits,
+    )
+    .map_err(|e| anyhow!("Invalid modular constraint: {e}"))?;
+
     if args.cpu {
         if !args.quiet && !args.json {
             info!("Mode: CPU (Software Solver)");
@@ -384,10 +410,36 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             info!("DP bits: {}", dp_bits);
         }
 
-        let mut start_be = start;
-        start_be.reverse();
+        let (solve_pubkey, solve_start_be, solve_range_bits, solve_base_point) = match &constraint {
+            Some(c) => {
+                let mut j_start_be = c.j_start;
+                j_start_be.reverse();
+                (
+                    c.transformed_pubkey,
+                    j_start_be,
+                    c.effective_range_bits,
+                    c.base_point,
+                )
+            }
+            None => {
+                let mut start_be = start;
+                start_be.reverse();
+                (
+                    pubkey,
+                    start_be,
+                    range_bits,
+                    ProjectivePoint::GENERATOR,
+                )
+            }
+        };
 
-        let mut solver = cpu::CpuKangarooSolver::new(pubkey, start_be, range_bits, dp_bits, ProjectivePoint::GENERATOR);
+        let mut solver = cpu::CpuKangarooSolver::new(
+            solve_pubkey,
+            solve_start_be,
+            solve_range_bits,
+            dp_bits,
+            solve_base_point,
+        );
 
         let expected_ops = (1u128 << (range_bits / 2)) as u64;
         let pb = if args.quiet || args.json {
@@ -402,7 +454,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let result = solver.solve(std::time::Duration::from_secs(3600));
         let duration = start_time.elapsed();
 
-        if let Some(private_key) = result {
+        if let Some(j_or_key) = result {
+            let private_key = match &constraint {
+                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                None => j_or_key,
+            };
             pb.finish_with_message("FOUND!");
             let key_hex = hex::encode(&private_key);
             let key_hex_trimmed = key_hex.trim_start_matches('0');
@@ -474,8 +530,18 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Kangaroos: {}", num_k);
     }
 
-    let mut solver =
-        solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?;
+    let mut solver = match &constraint {
+        Some(c) => solver::KangarooSolver::new_with_base(
+            gpu_context,
+            c.transformed_pubkey,
+            c.j_start,
+            c.effective_range_bits,
+            dp_bits,
+            num_k,
+            c.base_point,
+        )?,
+        None => solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?,
+    };
 
     let expected_ops = (1u128 << (range_bits / 2)) as u64;
     let pb = if args.quiet || args.json {
@@ -503,7 +569,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let total_ops = solver.total_operations();
         pb.set_position(total_ops);
 
-        if let Some(private_key) = result {
+        if let Some(j_or_key) = result {
+            let private_key = match &constraint {
+                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                None => j_or_key,
+            };
             let duration = start_time.elapsed();
             pb.finish_with_message("FOUND!");
             let key_hex = hex::encode(&private_key);
