@@ -62,7 +62,16 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
     ) -> Result<Self> {
-        Self::new_internal(ctx, pubkey, start, range_bits, dp_bits, num_kangaroos, true)
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            true,
+            ProjectivePoint::GENERATOR,
+        )
     }
 
     #[allow(dead_code)]
@@ -82,6 +91,7 @@ impl KangarooSolver {
             dp_bits,
             num_kangaroos,
             false,
+            ProjectivePoint::GENERATOR,
         )
     }
 
@@ -103,6 +113,32 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            ProjectivePoint::GENERATOR,
+        )
+    }
+
+    /// Create a solver with a custom base point.
+    ///
+    /// Used for modular constraint search where H = M*G replaces G.
+    /// The pubkey and start should already be the transformed values (Q, j_start).
+    pub fn new_with_base(
+        ctx: GpuContext,
+        pubkey: Point,
+        start: U256,
+        range_bits: u32,
+        dp_bits: u32,
+        num_kangaroos: u32,
+        base_point: ProjectivePoint,
+    ) -> Result<Self> {
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            true,
+            base_point,
         )
     }
 
@@ -137,10 +173,10 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
+        base_point: ProjectivePoint,
     ) -> Result<Self> {
         let jump_table_size = 256u32;
-        let (jump_points, jump_distances) =
-            generate_jump_table(range_bits, &ProjectivePoint::GENERATOR);
+        let (jump_points, jump_distances) = generate_jump_table(range_bits, &base_point);
 
         // Create DP mask
         let dp_mask = create_dp_mask(dp_bits);
@@ -177,13 +213,8 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos = initialize_kangaroos(
-            &pubkey,
-            &start,
-            range_bits,
-            num_kangaroos,
-            &ProjectivePoint::GENERATOR,
-        )?;
+        let kangaroos =
+            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
         upload_kangaroos(ctx, &buffers, &kangaroos)?;
 
         // Use start for key computation: k = start + tame_dist - wild_dist
@@ -199,7 +230,7 @@ impl KangarooSolver {
             ctx: ctx.clone(),
             pipeline: pipeline_clone,
             buffers,
-            dp_table: DPTable::new(start, pubkey, ProjectivePoint::GENERATOR),
+            dp_table: DPTable::new(start, pubkey, base_point),
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
@@ -215,6 +246,7 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
         verbose: bool,
+        base_point: ProjectivePoint,
     ) -> Result<Self> {
         if verbose {
             info!("Creating pipeline...");
@@ -228,8 +260,7 @@ impl KangarooSolver {
             info!("Generating jump table...");
         }
         let jump_table_size = 256u32;
-        let (jump_points, jump_distances) =
-            generate_jump_table(range_bits, &ProjectivePoint::GENERATOR);
+        let (jump_points, jump_distances) = generate_jump_table(range_bits, &base_point);
         if verbose {
             info!("Jump table generated: {} entries", jump_table_size);
             for (i, dist) in jump_distances.iter().enumerate().take(4) {
@@ -281,13 +312,8 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos = initialize_kangaroos(
-            &pubkey,
-            &start,
-            range_bits,
-            num_kangaroos,
-            &ProjectivePoint::GENERATOR,
-        )?;
+        let kangaroos =
+            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
         upload_kangaroos(&ctx, &buffers, &kangaroos)?;
 
         // Create solver instance
@@ -295,7 +321,7 @@ impl KangarooSolver {
             ctx,
             pipeline,
             buffers,
-            dp_table: DPTable::new(start, pubkey, ProjectivePoint::GENERATOR),
+            dp_table: DPTable::new(start, pubkey, base_point),
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
