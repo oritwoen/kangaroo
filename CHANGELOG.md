@@ -1,3 +1,32 @@
+## [0.7.0] - 2026-02-22
+
+### Features
+
+- *(benchmark)* Optional file output (#51)
+- Multi-set kangaroos (#38) (#58)
+- *(modular)* Add mod constraint filtering for ECDLP (#59)
+
+### Bug Fixes
+
+- *(cpu)* Unify 8-formula candidates (#53)
+- *(cpu)* Enforce timeout budget in CPU solver (#55)
+- *(cpu)* Unsigned distance mod n (#56)
+
+### Refactor
+
+- *(shaders)* Loopify 256-bit add/sub paths (#45)
+
+### Performance
+
+- *(gpu)* Dual point evaluation via inverse reuse (#39)
+- *(gpu)* Harden wgpu readback path (#44)
+- *(shader)* Improve benchmark stability (#47)
+- *(negmap)* Optimize walk + cycle guards (#57)
+- *(gpu)* Tune WGSL shader hot path (#61)
+
+### Miscellaneous Tasks
+
+- Create FUNDING.yml
 ## [0.6.0] - 2026-02-15
 
 ### Features
@@ -21,6 +50,10 @@
 
 - *(gpu)* Optimize fe_square (#30)
 - *(gpu)* Optimize fe_inv with addition chain — 2x speedup (#32)
+
+### Miscellaneous Tasks
+
+- *(release)* V0.6.0
 ## [0.5.0] - 2026-01-16
 
 ### Features
