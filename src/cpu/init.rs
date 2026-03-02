@@ -163,7 +163,7 @@ pub fn initialize_kangaroos(
 
     // Grid delta for even distribution (S2 strategy)
     let grid_delta = if num_kangaroos > 0 {
-        range_size / (num_kangaroos as u128)
+        (range_size / (num_kangaroos as u128)).max(1)
     } else {
         range_size
     };
@@ -185,7 +185,8 @@ pub fn initialize_kangaroos(
             // Grid-based offset + small random jitter
             let grid_pos = (i as u128) * grid_delta;
             let prng_seed = hash_seed(i, 0xCAFEBABE);
-            let jitter = prng_seed % (grid_delta / 2 + 1);
+            let jitter_span = (grid_delta / 2).max(1);
+            let jitter = prng_seed % jitter_span;
 
             let offset = (grid_pos + jitter) % range_size;
 

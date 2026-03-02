@@ -525,7 +525,19 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         info!("Compute units: {}", gpu_context.compute_units());
     }
 
-    let num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
+    let requested_num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
+    let max_k_for_range = if effective_range >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << effective_range).max(3)
+    };
+    let num_k = requested_num_k.min(max_k_for_range);
+    if !args.quiet && !args.json && num_k != requested_num_k {
+        info!(
+            "Capping kangaroos from {} to {} for {}-bit range",
+            requested_num_k, num_k, effective_range
+        );
+    }
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
         let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
         auto_dp.clamp(8, 40)
