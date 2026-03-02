@@ -212,8 +212,6 @@ impl DPTable {
     }
 }
 
-
-
 pub(crate) fn compute_candidate_scalars(
     base: Scalar,
     tame_d: Scalar,
@@ -321,7 +319,6 @@ fn scalar_to_key_bytes(scalar: &Scalar) -> Vec<u8> {
     let first_nonzero = bytes.iter().position(|&x| x != 0).unwrap_or(31);
     bytes[first_nonzero..].to_vec()
 }
-
 
 #[cfg(test)]
 mod tests {
