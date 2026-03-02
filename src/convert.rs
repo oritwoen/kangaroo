@@ -10,7 +10,6 @@ use k256::AffinePoint;
 ///
 /// GPU format: limbs[0] contains least significant 32 bits
 /// Output: bytes[0] contains most significant byte
-#[allow(dead_code)]
 pub fn limbs_to_be_bytes(limbs: &[u32; 8]) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     for i in 0..8 {
@@ -38,7 +37,6 @@ pub fn be_bytes_to_limbs(bytes: &[u8; 32]) -> [u32; 8] {
 }
 
 /// Convert [u32; 8] limbs to little-endian bytes.
-#[allow(dead_code)]
 pub fn limbs_to_le_bytes(arr: &[u32; 8]) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     for (i, &val) in arr.iter().enumerate() {
