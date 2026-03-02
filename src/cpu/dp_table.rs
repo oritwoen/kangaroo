@@ -1,5 +1,6 @@
 //! Distinguished Point hash table for collision detection
 
+use crate::convert::{limbs_to_be_bytes, limbs_to_le_bytes};
 use crate::crypto::verify_key_with_base;
 use crate::gpu::GpuDistinguishedPoint;
 use k256::elliptic_curve::ops::Reduce;
@@ -50,10 +51,10 @@ impl DPTable {
     /// Insert DP and check for collision
     /// Returns private key if collision found between tame and wild
     pub fn insert_and_check(&mut self, dp: GpuDistinguishedPoint) -> Option<Vec<u8>> {
-        let dist_bytes = u32_array_to_bytes(&dp.dist);
+        let dist_bytes = limbs_to_le_bytes(&dp.dist);
 
         // X is already in affine coordinates (no Z conversion needed)
-        let affine_x = u32_array_to_be_bytes(&dp.x);
+        let affine_x = limbs_to_be_bytes(&dp.x);
 
         // Debug: log first few DPs (only with RUST_LOG=debug)
         let total = self.total_dps();
@@ -211,56 +212,6 @@ impl DPTable {
     }
 }
 
-fn u32_array_to_be_bytes(arr: &[u32; 8]) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for i in 0..8 {
-        let limb_bytes = arr[7 - i].to_be_bytes();
-        bytes[i * 4..(i + 1) * 4].copy_from_slice(&limb_bytes);
-    }
-    bytes
-}
-
-fn u32_array_to_bytes(arr: &[u32; 8]) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for (i, &val) in arr.iter().enumerate() {
-        bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
-    }
-    bytes
-}
-
-#[allow(dead_code)]
-fn compute_private_key_legacy(
-    start: &[u8; 32],
-    dist1: &[u8],
-    dist2: &[u8],
-    type1: u32,
-    _type2: u32,
-) -> Vec<u8> {
-    // k = start + tame_dist - wild_dist
-    // When collision occurs:
-    // - Tame position: (start + tame_dist) * G
-    // - Wild position: (k + wild_dist) * G
-    // - Equal means: start + tame_dist = k + wild_dist
-    // - Therefore: k = start + tame_dist - wild_dist
-    let mut diff = vec![0u8; 32];
-
-    if type1 == 0 {
-        // existing is tame, new is wild
-        subtract_256(dist1, dist2, &mut diff);
-    } else {
-        // existing is wild, new is tame
-        subtract_256(dist2, dist1, &mut diff);
-    }
-
-    let mut result = vec![0u8; 32];
-    add_256(start, &diff, &mut result);
-
-    // Convert to big-endian and trim leading zeros
-    result.reverse();
-    let first_nonzero = result.iter().position(|&x| x != 0).unwrap_or(31);
-    result[first_nonzero..].to_vec()
-}
-
 pub(crate) fn compute_candidate_scalars(
     base: Scalar,
     tame_d: Scalar,
@@ -367,29 +318,6 @@ fn scalar_to_key_bytes(scalar: &Scalar) -> Vec<u8> {
     let bytes = scalar.to_bytes();
     let first_nonzero = bytes.iter().position(|&x| x != 0).unwrap_or(31);
     bytes[first_nonzero..].to_vec()
-}
-
-fn add_256(a: &[u8], b: &[u8], result: &mut [u8]) {
-    let mut carry = 0u16;
-    for i in 0..32 {
-        let sum = u16::from(a[i]) + u16::from(b[i]) + carry;
-        result[i] = sum as u8;
-        carry = sum >> 8;
-    }
-}
-
-fn subtract_256(a: &[u8], b: &[u8], result: &mut [u8]) {
-    let mut borrow = 0i16;
-    for i in 0..32 {
-        let diff = i16::from(a[i]) - i16::from(b[i]) - borrow;
-        if diff < 0 {
-            result[i] = (diff + 256) as u8;
-            borrow = 1;
-        } else {
-            result[i] = diff as u8;
-            borrow = 0;
-        }
-    }
 }
 
 #[cfg(test)]
