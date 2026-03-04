@@ -35,6 +35,9 @@ pub struct DPTable {
     pubkey: ProjectivePoint,
     base_point: ProjectivePoint,
     total_dps: usize,
+    tame_count: usize,
+    wild1_count: usize,
+    wild2_count: usize,
 }
 
 impl DPTable {
@@ -45,6 +48,9 @@ impl DPTable {
             pubkey,
             base_point,
             total_dps: 0,
+            tame_count: 0,
+            wild1_count: 0,
+            wild2_count: 0,
         }
     }
 
@@ -161,6 +167,7 @@ impl DPTable {
                 ktype: dp.ktype,
             });
             self.total_dps += 1;
+            self.increment_type_counter(dp.ktype);
         } else {
             if self.total_dps >= MAX_DISTINGUISHED_POINTS {
                 return None;
@@ -175,6 +182,7 @@ impl DPTable {
                 }],
             );
             self.total_dps += 1;
+            self.increment_type_counter(dp.ktype);
         }
 
         None
@@ -195,20 +203,16 @@ impl DPTable {
     }
 
     pub fn count_by_type(&self) -> (usize, usize, usize) {
-        let mut tame = 0usize;
-        let mut w1 = 0usize;
-        let mut w2 = 0usize;
-        for list in self.table.values() {
-            for dp in list {
-                match dp.ktype {
-                    0 => tame += 1,
-                    1 => w1 += 1,
-                    2 => w2 += 1,
-                    _ => {} // silently skip unknown types
-                }
-            }
+        (self.tame_count, self.wild1_count, self.wild2_count)
+    }
+
+    fn increment_type_counter(&mut self, ktype: u32) {
+        match ktype {
+            0 => self.tame_count += 1,
+            1 => self.wild1_count += 1,
+            2 => self.wild2_count += 1,
+            _ => {}
         }
-        (tame, w1, w2)
     }
 }
 
