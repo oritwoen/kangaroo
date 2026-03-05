@@ -21,7 +21,7 @@ pub use cpu::CpuKangarooSolver;
 pub use crypto::{
     full_verify, parse_hex_u256, parse_pubkey, verify_key, verify_key_with_base, Point,
 };
-pub use gpu_crypto::{GpuBackend, GpuContext};
+pub use gpu_crypto::{enumerate_gpus, GpuBackend, GpuContext, GpuDeviceInfo};
 pub use modular::ModConstraint;
 pub use solver::KangarooSolver;
 
@@ -63,6 +63,10 @@ pub struct Args {
     #[arg(long)]
     list_providers: bool,
 
+    /// List available GPU devices
+    #[arg(long)]
+    list_gpus: bool,
+
     /// Distinguished point bits (auto-calculated if not set)
     #[arg(short, long)]
     dp_bits: Option<u32>,
@@ -71,9 +75,9 @@ pub struct Args {
     #[arg(short, long)]
     kangaroos: Option<u32>,
 
-    /// GPU device index
+    /// GPU device selection (index, comma-separated indices, or "all")
     #[arg(long, default_value = "0")]
-    gpu: u32,
+    gpu: String,
 
     /// GPU backend to use
     #[arg(long, value_enum, default_value = "auto")]
@@ -345,6 +349,86 @@ fn print_providers_list() {
     }
 }
 
+/// Parse GPU selection string into sorted, deduplicated list of indices
+///
+/// Supports: "all", single index ("0"), comma-separated ("0,1,2").
+/// Deduplicates and validates against available GPU count.
+fn parse_gpu_selection(gpu_str: &str, available_count: usize) -> anyhow::Result<Vec<u32>> {
+    if available_count == 0 {
+        return Err(anyhow!("No GPU devices available"));
+    }
+
+    let trimmed = gpu_str.trim();
+
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Ok((0..available_count as u32).collect());
+    }
+
+    let mut indices: Vec<u32> = Vec::new();
+    for part in trimmed.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let idx: u32 = part
+            .parse()
+            .map_err(|_| anyhow!("Invalid GPU index '{}'. Use a number, comma-separated numbers, or 'all'", part))?;
+        if idx as usize >= available_count {
+            return Err(anyhow!(
+                "GPU index {} out of range. Available GPUs: 0..{} ({} device{})",
+                idx,
+                available_count - 1,
+                available_count,
+                if available_count == 1 { "" } else { "s" }
+            ));
+        }
+        indices.push(idx);
+    }
+
+    if indices.is_empty() {
+        return Err(anyhow!("Empty GPU selection"));
+    }
+
+    indices.sort();
+    indices.dedup();
+    Ok(indices)
+}
+
+fn print_gpu_list(devices: &[gpu_crypto::GpuDeviceInfo]) {
+    if devices.is_empty() {
+        println!("No GPU devices found.");
+        return;
+    }
+
+    println!("Available GPUs:");
+    println!(
+        "{:>5}  {:<40} {:<12} {:<8}",
+        "Index", "Name", "Type", "Backend"
+    );
+    println!("{}", "-".repeat(70));
+
+    for dev in devices {
+        let type_str = match dev.device_type {
+            wgpu::DeviceType::DiscreteGpu => "Discrete",
+            wgpu::DeviceType::IntegratedGpu => "Integrated",
+            wgpu::DeviceType::VirtualGpu => "Virtual",
+            wgpu::DeviceType::Cpu => "CPU",
+            _ => "Other",
+        };
+        let backend_str = match dev.backend {
+            wgpu::Backend::Vulkan => "Vulkan",
+            wgpu::Backend::Metal => "Metal",
+            wgpu::Backend::Dx12 => "DX12",
+            wgpu::Backend::Gl => "GL",
+            _ => "Other",
+        };
+        println!(
+            "{:>5}  {:<40} {:<12} {:<8}",
+            dev.index, dev.name, type_str, backend_str
+        );
+    }
+}
+
 fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Vec<u8> {
     debug_assert!(j_bytes.len() <= 32, "j_bytes too long: {}", j_bytes.len());
     let mut j_be = [0u8; 32];
@@ -362,13 +446,34 @@ fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Ve
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
+    if args.list_gpus {
+        let devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
+        print_gpu_list(&devices);
+        return Ok(());
+    }
+
     if args.list_providers {
         print_providers_list();
         return Ok(());
     }
 
+    // Parse GPU selection and validate against available devices
+    let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
+    let gpu_indices = parse_gpu_selection(&args.gpu, gpu_devices.len())?;
+
     if args.benchmark {
-        return benchmark::run(args.gpu, args.backend, args.save_benchmarks);
+        if gpu_indices.len() > 1 {
+            return Err(anyhow!(
+                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
+            ));
+        }
+        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
+    }
+
+    if args.cpu && gpu_indices.len() > 1 {
+        return Err(anyhow!(
+            "CPU mode does not use GPU selection. Use --gpu N to select one, or omit --gpu."
+        ));
     }
 
     let params = resolve_params(&args)?;
@@ -518,7 +623,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(args.gpu, args.backend))?;
+    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
     let device_name = gpu_context.device_name().to_string();
     if !args.quiet && !args.json {
         info!("GPU: {}", device_name);
@@ -751,5 +856,102 @@ mod cli_tests {
 
         assert_eq!(args.mod_step, "7", "mod_step should be '7'");
         assert_eq!(args.mod_start, "3", "mod_start should be '3'");
+    }
+
+    #[test]
+    fn test_cli_gpu_default() {
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+        ])
+        .expect("Failed to parse args");
+        assert_eq!(args.gpu, "0");
+    }
+
+    #[test]
+    fn test_cli_gpu_custom() {
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+            "--gpu",
+            "1,2",
+        ])
+        .expect("Failed to parse args");
+        assert_eq!(args.gpu, "1,2");
+    }
+
+    #[test]
+    fn test_cli_gpu_all() {
+        let args = Args::try_parse_from([
+            "kangaroo",
+            "--pubkey",
+            "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4",
+            "--range",
+            "20",
+            "--gpu",
+            "all",
+        ])
+        .expect("Failed to parse args");
+        assert_eq!(args.gpu, "all");
+    }
+
+    #[test]
+    fn test_cli_list_gpus_flag() {
+        let args = Args::try_parse_from(["kangaroo", "--list-gpus"])
+            .expect("Failed to parse args");
+        assert!(args.list_gpus);
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_single() {
+        assert_eq!(parse_gpu_selection("0", 4).unwrap(), vec![0]);
+        assert_eq!(parse_gpu_selection("2", 4).unwrap(), vec![2]);
+        assert_eq!(parse_gpu_selection("3", 4).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_all() {
+        assert_eq!(parse_gpu_selection("all", 3).unwrap(), vec![0, 1, 2]);
+        assert_eq!(parse_gpu_selection("ALL", 2).unwrap(), vec![0, 1]);
+        assert_eq!(parse_gpu_selection("All", 1).unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_comma_separated() {
+        assert_eq!(parse_gpu_selection("0,1,2", 4).unwrap(), vec![0, 1, 2]);
+        assert_eq!(parse_gpu_selection("2,0,1", 3).unwrap(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_dedup() {
+        assert_eq!(parse_gpu_selection("0,0", 2).unwrap(), vec![0]);
+        assert_eq!(parse_gpu_selection("1,1,1", 3).unwrap(), vec![1]);
+        assert_eq!(parse_gpu_selection("2,1,2,0,1", 3).unwrap(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_out_of_range() {
+        assert!(parse_gpu_selection("4", 4).is_err());
+        assert!(parse_gpu_selection("1", 1).is_err());
+        assert!(parse_gpu_selection("0,5", 4).is_err());
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_invalid() {
+        assert!(parse_gpu_selection("abc", 4).is_err());
+        assert!(parse_gpu_selection("-1", 4).is_err());
+        assert!(parse_gpu_selection("", 4).is_err());
+    }
+
+    #[test]
+    fn test_parse_gpu_selection_no_gpus() {
+        assert!(parse_gpu_selection("0", 0).is_err());
+        assert!(parse_gpu_selection("all", 0).is_err());
     }
 }
