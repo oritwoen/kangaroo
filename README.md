@@ -7,10 +7,6 @@
 
 GPU-accelerated Pollard's Kangaroo algorithm for solving the Elliptic Curve Discrete Logarithm Problem (ECDLP) on secp256k1.
 
-## Community
-
-- [Bitcointalk](https://bitcointalk.org/index.php?topic=5571086) - Discussion thread
-
 ## Features
 
 - **Cross-platform GPU support** via wgpu (Vulkan/Metal/DX12)
