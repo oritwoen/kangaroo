@@ -160,7 +160,8 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
     // Deduplicate across backends: for each adapter name, keep only the best backend
     // (lowest backend_priority). This preserves multiple physical GPUs of the same model
     // on the same backend while removing cross-backend duplicates (e.g. Vulkan + GL).
-    let mut best_backend_by_name: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut best_backend_by_name: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
     for e in &entries {
         let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.4);
         if e.4 < *current_best {

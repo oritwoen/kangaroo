@@ -409,8 +409,14 @@ impl KangarooSolver {
             info!("Config created: steps_per_call={}", steps_per_call);
         }
 
-        let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point, kangaroo_offset)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &base_point,
+            kangaroo_offset,
+        )?;
 
         if verbose {
             info!("Probing kernel variants (64/128)...");

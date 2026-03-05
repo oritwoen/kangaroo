@@ -628,7 +628,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             .find(|d| d.index == gpu_indices[0])
             .map(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend))
             .unwrap_or(args.backend);
-        let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], single_backend))?;
+        let gpu_context =
+            pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], single_backend))?;
         let device_name = gpu_context.device_name().to_string();
         if !args.quiet && !args.json {
             info!("GPU: {}", device_name);
