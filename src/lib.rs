@@ -930,6 +930,20 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
         let current_ops = total_ops.load(Ordering::Relaxed);
         pb.set_position(current_ops);
+
+        // Periodic DP stats logging (every ~10M ops, matching single-GPU behavior)
+        if current_ops % 10_000_000 < (gpu_indices.len() as u64 * per_gpu_k as u64) {
+            let (tame, w1, w2) = dp_table.count_by_type();
+            tracing::info!(
+                "Ops: {}M | DPs: {} ({} tame, {} wild1, {} wild2)",
+                current_ops / 1_000_000,
+                dp_table.total_dps(),
+                tame,
+                w1,
+                w2
+            );
+        }
+
         if current_ops >= max_ops {
             stop_flag.store(true, Ordering::Relaxed);
             break;
