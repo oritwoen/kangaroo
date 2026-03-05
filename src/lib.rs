@@ -34,6 +34,9 @@ use k256::{ProjectivePoint, Scalar};
 #[cfg(feature = "boha")]
 use num_bigint::BigUint;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::Instant;
 use tracing::{error, info};
 
@@ -623,50 +626,236 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
-    let device_name = gpu_context.device_name().to_string();
-    if !args.quiet && !args.json {
-        info!("GPU: {}", device_name);
-        info!("Compute units: {}", gpu_context.compute_units());
+    if gpu_indices.len() == 1 {
+        let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
+        let device_name = gpu_context.device_name().to_string();
+        if !args.quiet && !args.json {
+            info!("GPU: {}", device_name);
+            info!("Compute units: {}", gpu_context.compute_units());
+        }
+
+        let requested_num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
+        let max_k_for_range = if effective_range >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << effective_range).max(3)
+        };
+        let num_k = requested_num_k.min(max_k_for_range);
+        if !args.quiet && !args.json && num_k != requested_num_k {
+            info!(
+                "Capping kangaroos from {} to {} for {}-bit range",
+                requested_num_k, num_k, effective_range
+            );
+        }
+        let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
+            let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
+            auto_dp.clamp(8, 40)
+        });
+
+        if !args.quiet && !args.json {
+            info!("DP bits: {}", dp_bits);
+            info!("Kangaroos: {}", num_k);
+        }
+
+        let mut solver = match &constraint {
+            Some(c) => solver::KangarooSolver::new_with_base(
+                gpu_context,
+                c.transformed_pubkey,
+                c.j_start,
+                c.effective_range_bits,
+                dp_bits,
+                num_k,
+                c.base_point,
+            )?,
+            None => {
+                solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+            }
+        };
+
+        let expected_ops = 1u128
+            .checked_shl((effective_range / 2) as u32)
+            .unwrap_or(u64::MAX as u128)
+            .min(u64::MAX as u128) as u64;
+        let pb = if args.quiet || args.json {
+            ProgressBar::hidden()
+        } else {
+            let pb = ProgressBar::new(expected_ops);
+            pb.set_style(cli::default_progress_style());
+            pb
+        };
+
+        if !args.quiet && !args.json {
+            info!("Starting search...");
+        }
+
+        let max_ops = if args.max_ops == 0 {
+            u64::MAX
+        } else {
+            args.max_ops
+        };
+
+        let start_time = Instant::now();
+
+        loop {
+            let result = solver.step()?;
+            let total_ops = solver.total_operations();
+            pb.set_position(total_ops);
+
+            if let Some(j_or_key) = result {
+                let private_key = match &constraint {
+                    Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                    None => j_or_key,
+                };
+                let duration = start_time.elapsed();
+                pb.finish_with_message("FOUND!");
+                let key_hex = hex::encode(&private_key);
+                let key_hex_trimmed = key_hex.trim_start_matches('0');
+                let key_hex_display = if key_hex_trimmed.is_empty() {
+                    "0"
+                } else {
+                    key_hex_trimmed
+                };
+
+                if !crypto::verify_key(&private_key, &pubkey) {
+                    error!("Verification FAILED - this is a bug!");
+                    continue;
+                }
+
+                if args.json {
+                    let time_seconds = duration.as_secs_f64();
+                    let rate = total_ops as f64 / time_seconds;
+                    let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
+
+                    let result = BenchmarkResult {
+                        metric: "hash_rate".to_string(),
+                        value: rate,
+                        unit: "ops/s".to_string(),
+                        metadata: Metadata {
+                            device: device_name,
+                            range_bits: effective_range,
+                            algorithm: "pollard_kangaroo".to_string(),
+                            total_ops,
+                            time_seconds,
+                            k_factor,
+                        },
+                    };
+                    println!("{}", serde_json::to_string(&result)?);
+                } else if args.quiet {
+                    println!("{}", key_hex_display);
+                } else {
+                    info!("Private key found: 0x{}", key_hex_display);
+                    info!("Verification: SUCCESS");
+                    info!("Total operations: {}", total_ops);
+                    info!("Time elapsed: {:.2}s", duration.as_secs_f64());
+                    info!(
+                        "K-factor: {:.3}",
+                        total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
+                    );
+                }
+
+                if let Some(ref output) = args.output {
+                    std::fs::write(output, &key_hex)?;
+                    if !args.quiet && !args.json {
+                        info!("Result written to: {}", output);
+                    }
+                }
+
+                return Ok(());
+            }
+
+            if total_ops >= max_ops {
+                pb.finish_with_message("LIMIT REACHED");
+                if !args.quiet && !args.json {
+                    info!(
+                        "Maximum operations reached ({}) without finding key",
+                        max_ops
+                    );
+                }
+                return Err(anyhow!("Key not found within {} operations", max_ops));
+            }
+        }
     }
 
-    let requested_num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
+    let mut gpu_contexts = Vec::new();
+    for &gpu_index in &gpu_indices {
+        match pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, args.backend)) {
+            Ok(ctx) => gpu_contexts.push((gpu_index, ctx)),
+            Err(e) => tracing::warn!("Failed to initialize GPU {}: {}", gpu_index, e),
+        }
+    }
+    if gpu_contexts.is_empty() {
+        return Err(anyhow!("Failed to initialize any selected GPU"));
+    }
+
+    let num_gpus = gpu_contexts.len() as u32;
+    let device_name = gpu_contexts
+        .iter()
+        .map(|(_, ctx)| ctx.device_name().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !args.quiet && !args.json {
+        info!("GPUs: {}", device_name);
+        info!("GPU workers: {}", num_gpus);
+    }
+
     let max_k_for_range = if effective_range >= 32 {
         u32::MAX
     } else {
         (1u32 << effective_range).max(3)
     };
-    let num_k = requested_num_k.min(max_k_for_range);
-    if !args.quiet && !args.json && num_k != requested_num_k {
+    let requested_total_k = args.kangaroos.unwrap_or_else(|| {
+        gpu_contexts
+            .iter()
+            .map(|(_, ctx)| ctx.optimal_kangaroos())
+            .fold(0u32, |acc, k| acc.saturating_add(k))
+    });
+    let total_requested_capped = requested_total_k.min(max_k_for_range);
+    let mut per_gpu_k = total_requested_capped / num_gpus;
+    if per_gpu_k == 0 {
+        per_gpu_k = 1;
+    }
+    let total_k = per_gpu_k.saturating_mul(num_gpus);
+    if !args.quiet && !args.json && total_k != requested_total_k {
         info!(
             "Capping kangaroos from {} to {} for {}-bit range",
-            requested_num_k, num_k, effective_range
+            requested_total_k, total_k, effective_range
         );
     }
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
-        let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
+        let auto_dp = (effective_range / 2).saturating_sub((total_k as f64).log2() as u32 / 2);
         auto_dp.clamp(8, 40)
     });
 
     if !args.quiet && !args.json {
         info!("DP bits: {}", dp_bits);
-        info!("Kangaroos: {}", num_k);
+        info!("Kangaroos per GPU: {}", per_gpu_k);
+        info!("Total kangaroos: {}", total_k);
     }
 
-    let mut solver = match &constraint {
-        Some(c) => solver::KangarooSolver::new_with_base(
-            gpu_context,
+    let (solve_pubkey, solve_start, solve_range_bits, solve_base_point) = match &constraint {
+        Some(c) => (
             c.transformed_pubkey,
             c.j_start,
             c.effective_range_bits,
-            dp_bits,
-            num_k,
             c.base_point,
-        )?,
-        None => {
-            solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
-        }
+        ),
+        None => (pubkey, start, range_bits, ProjectivePoint::GENERATOR),
     };
+
+    let mut solvers = Vec::with_capacity(gpu_contexts.len());
+    for (gpu_index, ctx) in gpu_contexts {
+        let solver = solver::KangarooSolver::new_with_base_no_dp_table(
+            ctx,
+            solve_pubkey,
+            solve_start,
+            solve_range_bits,
+            dp_bits,
+            per_gpu_k,
+            solve_base_point,
+        )
+        .map_err(|e| anyhow!("Failed to initialize solver for GPU {}: {}", gpu_index, e))?;
+        solvers.push((gpu_index, solver));
+    }
 
     let expected_ops = 1u128
         .checked_shl((effective_range / 2) as u32)
@@ -681,7 +870,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     };
 
     if !args.quiet && !args.json {
-        info!("Starting search...");
+        info!("Starting multi-GPU search...");
     }
 
     let max_ops = if args.max_ops == 0 {
@@ -689,87 +878,147 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     } else {
         args.max_ops
     };
-
     let start_time = Instant::now();
 
-    loop {
-        let result = solver.step()?;
-        let total_ops = solver.total_operations();
-        pb.set_position(total_ops);
+    let (tx, rx) = mpsc::channel::<(Vec<gpu::GpuDistinguishedPoint>, u64)>();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let total_ops = Arc::new(AtomicU64::new(0));
 
-        if let Some(j_or_key) = result {
-            let private_key = match &constraint {
-                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
-                None => j_or_key,
-            };
-            let duration = start_time.elapsed();
-            pb.finish_with_message("FOUND!");
-            let key_hex = hex::encode(&private_key);
-            let key_hex_trimmed = key_hex.trim_start_matches('0');
-            let key_hex_display = if key_hex_trimmed.is_empty() {
-                "0"
-            } else {
-                key_hex_trimmed
-            };
+    let mut handles = Vec::with_capacity(solvers.len());
+    for (gpu_index, mut solver) in solvers {
+        let tx = tx.clone();
+        let stop_flag = Arc::clone(&stop_flag);
+        let total_ops = Arc::clone(&total_ops);
+        let handle = thread::spawn(move || {
+            loop {
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
 
-            if !crypto::verify_key(&private_key, &pubkey) {
-                error!("Verification FAILED - this is a bug!");
-                continue;
-            }
-
-            if args.json {
-                let time_seconds = duration.as_secs_f64();
-                let rate = total_ops as f64 / time_seconds;
-                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
-
-                let result = BenchmarkResult {
-                    metric: "hash_rate".to_string(),
-                    value: rate,
-                    unit: "ops/s".to_string(),
-                    metadata: Metadata {
-                        device: device_name,
-                        range_bits: effective_range,
-                        algorithm: "pollard_kangaroo".to_string(),
-                        total_ops,
-                        time_seconds,
-                        k_factor,
-                    },
-                };
-                println!("{}", serde_json::to_string(&result)?);
-            } else if args.quiet {
-                println!("{}", key_hex_display);
-            } else {
-                info!("Private key found: 0x{}", key_hex_display);
-                info!("Verification: SUCCESS");
-                info!("Total operations: {}", total_ops);
-                info!("Time elapsed: {:.2}s", duration.as_secs_f64());
-                info!(
-                    "K-factor: {:.3}",
-                    total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
-                );
-            }
-
-            if let Some(ref output) = args.output {
-                std::fs::write(output, &key_hex)?;
-                if !args.quiet && !args.json {
-                    info!("Result written to: {}", output);
+                match solver.step_collect() {
+                    Ok((dps, ops_delta)) => {
+                        total_ops.fetch_add(ops_delta, Ordering::Relaxed);
+                        if tx.send((dps, ops_delta)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("GPU worker {} stopped: {}", gpu_index, e);
+                        break;
+                    }
                 }
             }
+        });
+        handles.push(handle);
+    }
+    drop(tx);
 
-            return Ok(());
+    let mut dp_table = cpu::DPTable::new(solve_start, solve_pubkey, solve_base_point);
+    let mut found_key: Option<Vec<u8>> = None;
+
+    while let Ok((dps, _ops_delta)) = rx.recv() {
+        for dp in dps {
+            if let Some(j_or_key) = dp_table.insert_and_check(dp) {
+                found_key = Some(j_or_key);
+                stop_flag.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+        if found_key.is_some() {
+            break;
         }
 
-        if total_ops >= max_ops {
-            pb.finish_with_message("LIMIT REACHED");
-            if !args.quiet && !args.json {
-                info!(
-                    "Maximum operations reached ({}) without finding key",
-                    max_ops
-                );
-            }
-            return Err(anyhow!("Key not found within {} operations", max_ops));
+        let current_ops = total_ops.load(Ordering::Relaxed);
+        pb.set_position(current_ops);
+        if current_ops >= max_ops {
+            stop_flag.store(true, Ordering::Relaxed);
+            break;
         }
     }
+
+    stop_flag.store(true, Ordering::Relaxed);
+    for handle in handles {
+        if let Err(e) = handle.join() {
+            tracing::warn!("GPU worker thread panicked: {:?}", e);
+        }
+    }
+
+    let final_total_ops = total_ops.load(Ordering::Relaxed);
+
+    if let Some(j_or_key) = found_key {
+        let private_key = match &constraint {
+            Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+            None => j_or_key,
+        };
+        let duration = start_time.elapsed();
+        pb.finish_with_message("FOUND!");
+        let key_hex = hex::encode(&private_key);
+        let key_hex_trimmed = key_hex.trim_start_matches('0');
+        let key_hex_display = if key_hex_trimmed.is_empty() {
+            "0"
+        } else {
+            key_hex_trimmed
+        };
+
+        if !crypto::verify_key(&private_key, &pubkey) {
+            return Err(anyhow!("Verification FAILED - this is a bug!"));
+        }
+
+        if args.json {
+            let time_seconds = duration.as_secs_f64();
+            let rate = final_total_ops as f64 / time_seconds;
+            let k_factor = final_total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
+
+            let result = BenchmarkResult {
+                metric: "hash_rate".to_string(),
+                value: rate,
+                unit: "ops/s".to_string(),
+                metadata: Metadata {
+                    device: device_name,
+                    range_bits: effective_range,
+                    algorithm: "pollard_kangaroo".to_string(),
+                    total_ops: final_total_ops,
+                    time_seconds,
+                    k_factor,
+                },
+            };
+            println!("{}", serde_json::to_string(&result)?);
+        } else if args.quiet {
+            println!("{}", key_hex_display);
+        } else {
+            info!("Private key found: 0x{}", key_hex_display);
+            info!("Verification: SUCCESS");
+            info!("Total operations: {}", final_total_ops);
+            info!("Time elapsed: {:.2}s", duration.as_secs_f64());
+            info!(
+                "K-factor: {:.3}",
+                final_total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
+            );
+        }
+
+        if let Some(ref output) = args.output {
+            std::fs::write(output, &key_hex)?;
+            if !args.quiet && !args.json {
+                info!("Result written to: {}", output);
+            }
+        }
+
+        return Ok(());
+    }
+
+    if final_total_ops >= max_ops {
+        pb.finish_with_message("LIMIT REACHED");
+        if !args.quiet && !args.json {
+            info!(
+                "Maximum operations reached ({}) without finding key",
+                max_ops
+            );
+        }
+        return Err(anyhow!("Key not found within {} operations", max_ops));
+    }
+
+    pb.finish_with_message("STOPPED");
+    Err(anyhow!("All GPU workers stopped before finding key"))
 }
 
 #[cfg(all(test, feature = "boha"))]

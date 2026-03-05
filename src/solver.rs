@@ -76,6 +76,7 @@ impl KangarooSolver {
             dp_bits,
             num_kangaroos,
             true,
+            true,
             ProjectivePoint::GENERATOR,
         )
     }
@@ -97,6 +98,7 @@ impl KangarooSolver {
             dp_bits,
             num_kangaroos,
             false,
+            true,
             ProjectivePoint::GENERATOR,
         )
     }
@@ -144,6 +146,29 @@ impl KangarooSolver {
             dp_bits,
             num_kangaroos,
             true,
+            true,
+            base_point,
+        )
+    }
+
+    pub fn new_with_base_no_dp_table(
+        ctx: GpuContext,
+        pubkey: Point,
+        start: U256,
+        range_bits: u32,
+        dp_bits: u32,
+        num_kangaroos: u32,
+        base_point: ProjectivePoint,
+    ) -> Result<Self> {
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            false,
+            false,
             base_point,
         )
     }
@@ -334,6 +359,7 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
         verbose: bool,
+        with_dp_table: bool,
         base_point: ProjectivePoint,
     ) -> Result<Self> {
         if verbose {
@@ -418,7 +444,11 @@ impl KangarooSolver {
             ctx,
             pipeline,
             buffers,
-            dp_table: Some(DPTable::new(start, pubkey, base_point)),
+            dp_table: if with_dp_table {
+                Some(DPTable::new(start, pubkey, base_point))
+            } else {
+                None
+            },
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
