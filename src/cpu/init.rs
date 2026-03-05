@@ -97,12 +97,16 @@ pub fn generate_jump_table(
 ///
 /// Split into three sets: tame (ktype=0), wild₁ (ktype=1), wild₂ (ktype=2).
 /// Wild₂ uses the negated public key for cross-wild collision detection.
+///
+/// `kangaroo_offset` shifts global indices so multiple GPU workers get unique positions.
+/// For single-GPU, pass 0. For multi-GPU, GPU N gets offset = N * num_kangaroos.
 pub fn initialize_kangaroos(
     pubkey: &Point,
     start: &U256,
     range_bits: u32,
     num_kangaroos: u32,
     base_point: &ProjectivePoint,
+    kangaroo_offset: u32,
 ) -> Result<Vec<GpuKangaroo>> {
     anyhow::ensure!(
         num_kangaroos >= 3,
@@ -162,8 +166,10 @@ pub fn initialize_kangaroos(
     );
 
     // Grid delta for even distribution (S2 strategy)
-    let grid_delta = if num_kangaroos > 0 {
-        (range_size / (num_kangaroos as u128)).max(1)
+    // Use total kangaroo count (offset + local count) for grid spacing
+    let total_kangaroos = (kangaroo_offset + num_kangaroos) as u128;
+    let grid_delta = if total_kangaroos > 0 {
+        (range_size / total_kangaroos).max(1)
     } else {
         range_size
     };
@@ -183,8 +189,9 @@ pub fn initialize_kangaroos(
             };
 
             // Grid-based offset + small random jitter
-            let grid_pos = (i as u128) * grid_delta;
-            let prng_seed = hash_seed(i, 0xCAFEBABE);
+            let global_i = kangaroo_offset + i;
+            let grid_pos = (global_i as u128) * grid_delta;
+            let prng_seed = hash_seed(global_i, 0xCAFEBABE);
             let jitter_span = (grid_delta / 2).max(1);
             let jitter = prng_seed % jitter_span;
 
@@ -376,6 +383,7 @@ mod tests {
             range_bits,
             num_kangaroos,
             &ProjectivePoint::GENERATOR,
+            0,
         )
         .unwrap();
         assert_eq!(kangaroos.len(), num_kangaroos as usize);
@@ -396,7 +404,7 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR);
+        let result = initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR, 0);
         assert!(result.is_err(), "Should fail for num_kangaroos < 3");
         assert!(result.unwrap_err().to_string().contains("at least 3"));
     }

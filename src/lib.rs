@@ -463,27 +463,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Parse GPU selection and validate against available devices
-    let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
-    let gpu_indices = parse_gpu_selection(&args.gpu, gpu_devices.len())?;
-
-    if args.benchmark {
-        if gpu_indices.len() > 1 {
-            return Err(anyhow!(
-                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
-            ));
-        }
-        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
-    }
-
-    if args.cpu && gpu_indices.len() > 1 {
-        return Err(anyhow!(
-            "CPU mode does not use GPU selection. Use --gpu N to select one, or omit --gpu."
-        ));
-    }
-
     let params = resolve_params(&args)?;
-
     if !args.quiet && !args.json {
         info!("Kangaroo ECDLP Solver");
         info!("=====================");
@@ -629,9 +609,26 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
+    // Parse GPU selection and validate against available devices
+    let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
+    let gpu_indices = parse_gpu_selection(&args.gpu, gpu_devices.len())?;
+
+    if args.benchmark {
+        if gpu_indices.len() > 1 {
+            return Err(anyhow!(
+                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
+            ));
+        }
+        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
+    }
+
     if gpu_indices.len() == 1 {
-        let gpu_context =
-            pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
+        let single_backend = gpu_devices
+            .iter()
+            .find(|d| d.index == gpu_indices[0])
+            .map(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend))
+            .unwrap_or(args.backend);
+        let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], single_backend))?;
         let device_name = gpu_context.device_name().to_string();
         if !args.quiet && !args.json {
             info!("GPU: {}", device_name);
@@ -782,7 +779,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let mut gpu_contexts = Vec::new();
     for &gpu_index in &gpu_indices {
-        match pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, args.backend)) {
+        // Use the specific backend from enumeration to ensure index consistency
+        let backend = gpu_devices
+            .iter()
+            .find(|d| d.index == gpu_index)
+            .map(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend))
+            .unwrap_or(args.backend);
+        match pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, backend)) {
             Ok(ctx) => gpu_contexts.push((gpu_index, ctx)),
             Err(e) => tracing::warn!("Failed to initialize GPU {}: {}", gpu_index, e),
         }
@@ -847,7 +850,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     };
 
     let mut solvers = Vec::with_capacity(gpu_contexts.len());
-    for (gpu_index, ctx) in gpu_contexts {
+    for (worker_idx, (gpu_index, ctx)) in gpu_contexts.into_iter().enumerate() {
+        let kangaroo_offset = (worker_idx as u32) * per_gpu_k;
         let solver = solver::KangarooSolver::new_with_base_no_dp_table(
             ctx,
             solve_pubkey,
@@ -856,6 +860,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             dp_bits,
             per_gpu_k,
             solve_base_point,
+            kangaroo_offset,
         )
         .map_err(|e| anyhow!("Failed to initialize solver for GPU {}: {}", gpu_index, e))?;
         solvers.push((gpu_index, solver));
@@ -918,12 +923,22 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let mut dp_table = cpu::DPTable::new(solve_start, solve_pubkey, solve_base_point);
     let mut found_key: Option<Vec<u8>> = None;
 
+    let mut last_log_ops: u64 = 0;
     while let Ok((dps, _ops_delta)) = rx.recv() {
         for dp in dps {
             if let Some(j_or_key) = dp_table.insert_and_check(dp) {
-                found_key = Some(j_or_key);
-                stop_flag.store(true, Ordering::Relaxed);
-                break;
+                // Verify candidate key before stopping all workers
+                let candidate = match &constraint {
+                    Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                    None => j_or_key,
+                };
+                if crypto::verify_key(&candidate, &pubkey) {
+                    found_key = Some(candidate);
+                    stop_flag.store(true, Ordering::Relaxed);
+                    break;
+                } else {
+                    tracing::warn!("Collision candidate failed verification, continuing search");
+                }
             }
         }
         if found_key.is_some() {
@@ -934,7 +949,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         pb.set_position(current_ops);
 
         // Periodic DP stats logging (every ~10M ops, matching single-GPU behavior)
-        if current_ops % 10_000_000 < (gpu_indices.len() as u64 * per_gpu_k as u64) {
+        if current_ops.saturating_sub(last_log_ops) >= 10_000_000 {
+            last_log_ops = current_ops;
             let (tame, w1, w2) = dp_table.count_by_type();
             tracing::info!(
                 "Ops: {}M | DPs: {} ({} tame, {} wild1, {} wild2)",
@@ -961,11 +977,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let final_total_ops = total_ops.load(Ordering::Relaxed);
 
-    if let Some(j_or_key) = found_key {
-        let private_key = match &constraint {
-            Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
-            None => j_or_key,
-        };
+    if let Some(private_key) = found_key {
         let duration = start_time.elapsed();
         pb.finish_with_message("FOUND!");
         let key_hex = hex::encode(&private_key);
@@ -975,10 +987,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         } else {
             key_hex_trimmed
         };
-
-        if !crypto::verify_key(&private_key, &pubkey) {
-            return Err(anyhow!("Verification FAILED - this is a bug!"));
-        }
 
         if args.json {
             let time_seconds = duration.as_secs_f64();

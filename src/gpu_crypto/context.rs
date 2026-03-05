@@ -54,6 +54,17 @@ impl GpuBackend {
             GpuBackend::Gl => "OpenGL",
         }
     }
+
+    /// Convert from wgpu::Backend to GpuBackend
+    pub fn from_wgpu_backend(backend: wgpu::Backend) -> Self {
+        match backend {
+            wgpu::Backend::Vulkan => GpuBackend::Vulkan,
+            wgpu::Backend::Metal => GpuBackend::Metal,
+            wgpu::Backend::Dx12 => GpuBackend::Dx12,
+            wgpu::Backend::Gl => GpuBackend::Gl,
+            _ => GpuBackend::Auto,
+        }
+    }
 }
 
 impl std::fmt::Display for GpuBackend {
@@ -146,9 +157,17 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
         warn!("No hardware GPU found, listing software renderers");
     }
 
-    // Deduplicate by adapter name (keep first = best backend)
-    let mut seen = std::collections::HashSet::new();
-    entries.retain(|e| seen.insert(e.0.clone()));
+    // Deduplicate across backends: for each adapter name, keep only the best backend
+    // (lowest backend_priority). This preserves multiple physical GPUs of the same model
+    // on the same backend while removing cross-backend duplicates (e.g. Vulkan + GL).
+    let mut best_backend_by_name: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for e in &entries {
+        let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.4);
+        if e.4 < *current_best {
+            *current_best = e.4;
+        }
+    }
+    entries.retain(|e| e.4 == *best_backend_by_name.get(&e.0).unwrap());
 
     // Assign sequential indices
     let devices: Vec<GpuDeviceInfo> = entries

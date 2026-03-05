@@ -78,6 +78,7 @@ impl KangarooSolver {
             true,
             true,
             ProjectivePoint::GENERATOR,
+            0,
         )
     }
 
@@ -100,6 +101,7 @@ impl KangarooSolver {
             false,
             true,
             ProjectivePoint::GENERATOR,
+            0,
         )
     }
 
@@ -148,9 +150,11 @@ impl KangarooSolver {
             true,
             true,
             base_point,
+            0,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_base_no_dp_table(
         ctx: GpuContext,
         pubkey: Point,
@@ -159,6 +163,7 @@ impl KangarooSolver {
         dp_bits: u32,
         num_kangaroos: u32,
         base_point: ProjectivePoint,
+        kangaroo_offset: u32,
     ) -> Result<Self> {
         Self::new_internal(
             ctx,
@@ -170,6 +175,7 @@ impl KangarooSolver {
             false,
             false,
             base_point,
+            kangaroo_offset,
         )
     }
 
@@ -245,7 +251,7 @@ impl KangarooSolver {
 
         // Initialize kangaroos
         let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
+            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point, 0)?;
         upload_kangaroos(ctx, &buffers, &kangaroos)?;
 
         // Use start for key computation: k = start + tame_dist - wild_dist
@@ -361,6 +367,7 @@ impl KangarooSolver {
         verbose: bool,
         with_dp_table: bool,
         base_point: ProjectivePoint,
+        kangaroo_offset: u32,
     ) -> Result<Self> {
         if verbose {
             info!("Generating jump table...");
@@ -403,7 +410,7 @@ impl KangarooSolver {
         }
 
         let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
+            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point, kangaroo_offset)?;
 
         if verbose {
             info!("Probing kernel variants (64/128)...");
