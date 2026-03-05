@@ -125,7 +125,13 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
                 wgpu::Backend::Gl => 3,
                 _ => 4,
             };
-            (info.name.clone(), info.device_type, info.backend, device_priority, backend_priority)
+            (
+                info.name.clone(),
+                info.device_type,
+                info.backend,
+                device_priority,
+                backend_priority,
+            )
         })
         .collect();
 
@@ -213,7 +219,6 @@ impl GpuContext {
 
         Err(anyhow!("No GPU backends available"))
     }
-
 
     /// Try to create context with specific backend
     async fn try_backend(

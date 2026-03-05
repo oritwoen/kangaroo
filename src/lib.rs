@@ -373,9 +373,12 @@ fn parse_gpu_selection(gpu_str: &str, available_count: usize) -> anyhow::Result<
         if part.is_empty() {
             continue;
         }
-        let idx: u32 = part
-            .parse()
-            .map_err(|_| anyhow!("Invalid GPU index '{}'. Use a number, comma-separated numbers, or 'all'", part))?;
+        let idx: u32 = part.parse().map_err(|_| {
+            anyhow!(
+                "Invalid GPU index '{}'. Use a number, comma-separated numbers, or 'all'",
+                part
+            )
+        })?;
         if idx as usize >= available_count {
             return Err(anyhow!(
                 "GPU index {} out of range. Available GPUs: 0..{} ({} device{})",
@@ -627,7 +630,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     if gpu_indices.len() == 1 {
-        let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
+        let gpu_context =
+            pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], args.backend))?;
         let device_name = gpu_context.device_name().to_string();
         if !args.quiet && !args.json {
             info!("GPU: {}", device_name);
@@ -889,23 +893,21 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let tx = tx.clone();
         let stop_flag = Arc::clone(&stop_flag);
         let total_ops = Arc::clone(&total_ops);
-        let handle = thread::spawn(move || {
-            loop {
-                if stop_flag.load(Ordering::Relaxed) {
-                    break;
-                }
+        let handle = thread::spawn(move || loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
 
-                match solver.step_collect() {
-                    Ok((dps, ops_delta)) => {
-                        total_ops.fetch_add(ops_delta, Ordering::Relaxed);
-                        if tx.send((dps, ops_delta)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("GPU worker {} stopped: {}", gpu_index, e);
+            match solver.step_collect() {
+                Ok((dps, ops_delta)) => {
+                    total_ops.fetch_add(ops_delta, Ordering::Relaxed);
+                    if tx.send((dps, ops_delta)).is_err() {
                         break;
                     }
+                }
+                Err(e) => {
+                    tracing::warn!("GPU worker {} stopped: {}", gpu_index, e);
+                    break;
                 }
             }
         });
@@ -1166,8 +1168,7 @@ mod cli_tests {
 
     #[test]
     fn test_cli_list_gpus_flag() {
-        let args = Args::try_parse_from(["kangaroo", "--list-gpus"])
-            .expect("Failed to parse args");
+        let args = Args::try_parse_from(["kangaroo", "--list-gpus"]).expect("Failed to parse args");
         assert!(args.list_gpus);
     }
 
