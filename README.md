@@ -9,15 +9,16 @@ GPU-accelerated Pollard's Kangaroo algorithm for solving the Elliptic Curve Disc
 
 ## Features
 
-- **Cross-platform GPU support** via wgpu (Vulkan/Metal/DX12)
-  - AMD GPUs (via Vulkan/RADV)
-  - NVIDIA GPUs (via Vulkan)
-  - Intel GPUs (via Vulkan)
-  - Apple Silicon (via Metal)
-- **Pure Rust** implementation with WGSL compute shaders
-- **Distinguished Points** optimization for efficient collision detection
-- **CPU fallback** for testing and comparison
-- **Data providers** for puzzle sources (boha integration)
+- 🖥️ **Cross-platform GPU** — Vulkan (AMD, NVIDIA, Intel), Metal (Apple Silicon), DX12 (Windows) via wgpu
+- 🦀 **Pure Rust + WGSL** — no CUDA dependency, compute shaders compiled at runtime
+- ⚡ **Distinguished Points** — efficient collision detection with auto-tuned DP bits
+- 🔄 **Negation map** — ~1.29× speedup via Y-parity directed walks with cycle guards
+- 🦘 **Multi-set kangaroos** — tame, wild1, wild2 herds for higher collision probability
+- 🎯 **Modular constraints** — if k ≡ R (mod M), reduce search space by factor M
+- ⚙️ **Auto-calibration** — GPU dispatch timing and workgroup size tuned at startup
+- 📊 **Built-in benchmarks** — `--benchmark` to test hardware, `--save-benchmarks` to record results
+- 📦 **Data providers** — pluggable puzzle sources (boha integration for Bitcoin puzzles)
+- 💻 **CPU fallback** — pure CPU solver for testing and comparison
 
 ## Why This Project?
 
@@ -68,6 +69,7 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `-d, --dp-bits` | auto | Distinguished point bits |
 | `-k, --kangaroos` | auto | Number of parallel kangaroos |
 | `--gpu` | 0 | GPU device index |
+| `--backend` | auto | GPU backend: `auto`, `vulkan`, `dx12`, `metal`, `gl` |
 | `-o, --output` | - | Output file for result |
 | `-q, --quiet` | false | Minimal output, just print found key |
 | `--max-ops` | 0 | Max operations (0 = unlimited) |
@@ -75,6 +77,8 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `--json` | false | Output benchmark results in JSON format |
 | `--benchmark` | false | Run benchmark suite |
 | `--save-benchmarks` | false | Save benchmark results to `BENCHMARKS.md` when `--benchmark` is used |
+| `--mod-step` | 1 | Modular step M (hex): search only k ≡ R (mod M) |
+| `--mod-start` | 0 | Modular residue R (hex): 0 ≤ R < M |
 | `--list-providers` | false | List available puzzles from providers |
 
 Either `--target` or `--pubkey` is required.
@@ -102,6 +106,19 @@ kangaroo \
     --start 8000000000 \
     --range 40
 ```
+
+**With modular constraint (k ≡ 37 mod 60):**
+
+```bash
+kangaroo \
+    --pubkey 03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4 \
+    --start 8000000000 \
+    --range 40 \
+    --mod-step 3c \
+    --mod-start 25
+```
+
+This reduces the search space by ~60×. Useful when partial key structure is known (e.g., key generated with a predictable step pattern).
 
 ## How It Works
 
@@ -135,13 +152,13 @@ Run `kangaroo --benchmark` to test your hardware without touching files. Use `ka
 ## Library Usage
 
 ```rust
-use kangaroo::{KangarooSolver, GpuContext, parse_pubkey, parse_hex_u256, verify_key};
+use kangaroo::{KangarooSolver, GpuContext, GpuBackend, parse_pubkey, parse_hex_u256, verify_key};
 
 fn main() -> anyhow::Result<()> {
     let pubkey = parse_pubkey("03...")?;
     let start = parse_hex_u256("8000000000")?;
 
-    let ctx = pollster::block_on(GpuContext::new(0))?;
+    let ctx = pollster::block_on(GpuContext::new(0, GpuBackend::Auto))?;
     let mut solver = KangarooSolver::new(
         ctx,
         pubkey.clone(),
@@ -196,6 +213,10 @@ src/
 ├── lib.rs               # Library entry + Args + run()
 ├── solver.rs            # GPU solver coordination
 ├── cli.rs               # CLI utilities (tracing, progress bar)
+├── benchmark.rs         # Built-in benchmark suite
+├── modular.rs           # Modular constraint transformation
+├── math.rs              # 256-bit arithmetic, DP mask generation
+├── convert.rs           # Limb/byte conversions for GPU↔CPU
 ├── provider/
 │   ├── mod.rs           # Provider system interface
 │   └── boha.rs          # boha provider (feature-gated)
@@ -209,7 +230,7 @@ src/
 │   ├── pipeline.rs      # Compute pipeline setup
 │   └── buffers.rs       # GPU buffer management
 ├── gpu_crypto/
-│   ├── context.rs       # GPU context abstraction
+│   ├── context.rs       # GPU context + backend selection
 │   └── shaders/         # WGSL shader library
 │       ├── field.wgsl   # secp256k1 field arithmetic
 │       └── curve.wgsl   # Jacobian point operations
