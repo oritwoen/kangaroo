@@ -75,6 +75,7 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            num_kangaroos,
             true,
             true,
             ProjectivePoint::GENERATOR,
@@ -97,6 +98,7 @@ impl KangarooSolver {
             start,
             range_bits,
             dp_bits,
+            num_kangaroos,
             num_kangaroos,
             false,
             true,
@@ -147,6 +149,7 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            num_kangaroos,
             true,
             true,
             base_point,
@@ -162,6 +165,7 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
+        global_kangaroo_count: u32,
         base_point: ProjectivePoint,
         kangaroo_offset: u32,
     ) -> Result<Self> {
@@ -172,6 +176,7 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            global_kangaroo_count,
             false,
             false,
             base_point,
@@ -250,8 +255,15 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point, 0)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &base_point,
+            0,
+            num_kangaroos,
+        )?;
         upload_kangaroos(ctx, &buffers, &kangaroos)?;
 
         // Use start for key computation: k = start + tame_dist - wild_dist
@@ -364,6 +376,7 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
+        global_kangaroo_count: u32,
         verbose: bool,
         with_dp_table: bool,
         base_point: ProjectivePoint,
@@ -416,6 +429,7 @@ impl KangarooSolver {
             num_kangaroos,
             &base_point,
             kangaroo_offset,
+            global_kangaroo_count,
         )?;
 
         if verbose {

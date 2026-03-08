@@ -822,6 +822,12 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     if per_gpu_k == 0 {
         per_gpu_k = 1;
     }
+    if per_gpu_k < 3 {
+        return Err(anyhow!(
+            "Need at least 3 kangaroos per selected GPU (got {}). Increase --kangaroos or select fewer GPUs.",
+            per_gpu_k
+        ));
+    }
     let total_k = per_gpu_k.saturating_mul(num_gpus);
     if !args.quiet && !args.json && total_k != requested_total_k {
         info!(
@@ -860,6 +866,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             solve_range_bits,
             dp_bits,
             per_gpu_k,
+            total_k,
             solve_base_point,
             kangaroo_offset,
         )
@@ -890,7 +897,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     };
     let start_time = Instant::now();
 
-    let (tx, rx) = mpsc::channel::<(Vec<gpu::GpuDistinguishedPoint>, u64)>();
+    let queue_capacity = (solvers.len() * 2).max(1);
+    let (tx, rx) = mpsc::sync_channel::<(Vec<gpu::GpuDistinguishedPoint>, u64)>(queue_capacity);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let total_ops = Arc::new(AtomicU64::new(0));
 
@@ -970,6 +978,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     stop_flag.store(true, Ordering::Relaxed);
+    drop(rx);
     for handle in handles {
         if let Err(e) = handle.join() {
             tracing::warn!("GPU worker thread panicked: {:?}", e);

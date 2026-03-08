@@ -107,6 +107,7 @@ pub fn initialize_kangaroos(
     num_kangaroos: u32,
     base_point: &ProjectivePoint,
     kangaroo_offset: u32,
+    global_kangaroo_count: u32,
 ) -> Result<Vec<GpuKangaroo>> {
     anyhow::ensure!(
         num_kangaroos >= 3,
@@ -166,8 +167,7 @@ pub fn initialize_kangaroos(
     );
 
     // Grid delta for even distribution (S2 strategy)
-    // Use total kangaroo count (offset + local count) for grid spacing
-    let total_kangaroos = (kangaroo_offset + num_kangaroos) as u128;
+    let total_kangaroos = u128::from(global_kangaroo_count.max(1));
     let grid_delta = if total_kangaroos > 0 {
         (range_size / total_kangaroos).max(1)
     } else {
@@ -384,6 +384,7 @@ mod tests {
             num_kangaroos,
             &ProjectivePoint::GENERATOR,
             0,
+            num_kangaroos,
         )
         .unwrap();
         assert_eq!(kangaroos.len(), num_kangaroos as usize);
@@ -404,8 +405,56 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR, 0);
+        let result =
+            initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR, 0, 2);
         assert!(result.is_err(), "Should fail for num_kangaroos < 3");
         assert!(result.unwrap_err().to_string().contains("at least 3"));
+    }
+
+    #[test]
+    fn test_multi_gpu_workers_have_disjoint_initial_states() {
+        use std::collections::HashSet;
+
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let range_bits = 24u32;
+        let per_gpu_k = 512u32;
+        let total_k = per_gpu_k * 2;
+
+        let gpu0 = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            per_gpu_k,
+            &ProjectivePoint::GENERATOR,
+            0,
+            total_k,
+        )
+        .unwrap();
+
+        let gpu1 = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            per_gpu_k,
+            &ProjectivePoint::GENERATOR,
+            per_gpu_k,
+            total_k,
+        )
+        .unwrap();
+
+        let gpu0_states: HashSet<([u32; 8], [u32; 8], [u32; 8], u32)> = gpu0
+            .iter()
+            .map(|k| (k.x, k.y, k.dist, k.ktype as u32))
+            .collect();
+
+        for k in &gpu1 {
+            let state = (k.x, k.y, k.dist, k.ktype as u32);
+            assert!(
+                !gpu0_states.contains(&state),
+                "GPU workers must not share initial kangaroo states"
+            );
+        }
     }
 }

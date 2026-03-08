@@ -118,10 +118,11 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
     }
 
     // Collect adapter info with sorting key
-    let mut entries: Vec<(String, wgpu::DeviceType, wgpu::Backend, u32, u32)> = adapters
+    let mut entries: Vec<(String, wgpu::DeviceType, wgpu::Backend, bool, u32, u32)> = adapters
         .iter()
         .map(|a| {
             let info = a.get_info();
+            let software = is_software_adapter(&info);
             let device_priority = match info.device_type {
                 wgpu::DeviceType::DiscreteGpu => 0,
                 wgpu::DeviceType::VirtualGpu => 1,
@@ -140,6 +141,7 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
                 info.name.clone(),
                 info.device_type,
                 info.backend,
+                software,
                 device_priority,
                 backend_priority,
             )
@@ -147,12 +149,12 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
         .collect();
 
     // Sort by device type then backend priority
-    entries.sort_by_key(|e| (e.3, e.4));
+    entries.sort_by_key(|e| (e.4, e.5));
 
     // Filter software renderers unless no hardware found
-    let has_hardware = entries.iter().any(|e| e.3 < 3);
+    let has_hardware = entries.iter().any(|e| !e.3 && e.4 < 3);
     if has_hardware {
-        entries.retain(|e| e.3 < 3);
+        entries.retain(|e| !e.3 && e.4 < 3);
     } else {
         warn!("No hardware GPU found, listing software renderers");
     }
@@ -163,18 +165,18 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
     let mut best_backend_by_name: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
     for e in &entries {
-        let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.4);
-        if e.4 < *current_best {
-            *current_best = e.4;
+        let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.5);
+        if e.5 < *current_best {
+            *current_best = e.5;
         }
     }
-    entries.retain(|e| e.4 == *best_backend_by_name.get(&e.0).unwrap());
+    entries.retain(|e| e.5 == *best_backend_by_name.get(&e.0).unwrap());
 
     // Assign sequential indices
     let devices: Vec<GpuDeviceInfo> = entries
         .into_iter()
         .enumerate()
-        .map(|(i, (name, device_type, backend, _, _))| GpuDeviceInfo {
+        .map(|(i, (name, device_type, backend, _, _, _))| GpuDeviceInfo {
             name,
             device_type,
             backend,
