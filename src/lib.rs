@@ -434,7 +434,11 @@ fn filter_integrated_from_all_selection(
         .map(|d| d.index)
         .collect();
 
-    if filtered.is_empty() { selected } else { filtered }
+    if filtered.is_empty() {
+        selected
+    } else {
+        filtered
+    }
 }
 
 fn gpu_weight_for_device_type(device_type: wgpu::DeviceType) -> u32 {
@@ -495,11 +499,17 @@ struct CalibrationCache {
 
 fn calibration_cache_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        return Some(PathBuf::from(path).join("kangaroo").join("gpu-calibration.json"));
+        return Some(
+            PathBuf::from(path)
+                .join("kangaroo")
+                .join("gpu-calibration.json"),
+        );
     }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|p| p.join(".cache").join("kangaroo").join("gpu-calibration.json"))
+    std::env::var_os("HOME").map(PathBuf::from).map(|p| {
+        p.join(".cache")
+            .join("kangaroo")
+            .join("gpu-calibration.json")
+    })
 }
 
 fn load_calibration_cache() -> CalibrationCache {
