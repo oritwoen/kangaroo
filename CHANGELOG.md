@@ -1,3 +1,22 @@
+## [0.7.1] - 2026-03-08
+
+### Bug Fixes
+
+- *(solver)* Stabilize tiny-range boha targets (#64)
+- *(init)* 256-bit range arithmetic (#71)
+
+### Refactor
+
+- *(dp_table)* Dedup conversions (#66)
+
+### Performance
+
+- *(dp_table)* O(1) count_by_type (#68)
+
+### Miscellaneous Tasks
+
+- Remove community section from README.md
+- Update README.md
 ## [0.7.0] - 2026-02-22
 
 ### Features
@@ -27,6 +46,7 @@
 ### Miscellaneous Tasks
 
 - Create FUNDING.yml
+- *(release)* V0.7.0
 ## [0.6.0] - 2026-02-15
 
 ### Features
