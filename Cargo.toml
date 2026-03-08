@@ -17,6 +17,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 
 # Crypto
 k256 = { version = "0.13", features = ["arithmetic", "expose-field"] }
+crypto-bigint = "0.5"
 bitcoin = { version = "0.32", features = ["rand", "secp-recovery"] }
 hex = "0.4"
 
