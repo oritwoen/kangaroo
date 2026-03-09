@@ -625,6 +625,11 @@ fn auto_calibrate_gpu_weights(
             }
         }
 
+        if ops == 0 {
+            measured_weights.push((*fallback_weight).max(1));
+            continue;
+        }
+
         let elapsed = start_t.elapsed().as_secs_f64();
         let ops_per_sec = if elapsed > 0.0 {
             ops as f64 / elapsed
