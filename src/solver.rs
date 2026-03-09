@@ -45,7 +45,7 @@ pub struct KangarooSolver {
     ctx: GpuContext,
     pipeline: KangarooPipeline,
     buffers: GpuBuffers,
-    dp_table: DPTable,
+    dp_table: Option<DPTable>,
     total_ops: u64,
     num_kangaroos: u32,
     #[allow(dead_code)]
@@ -75,8 +75,11 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            num_kangaroos,
+            true,
             true,
             ProjectivePoint::GENERATOR,
+            0,
         )
     }
 
@@ -96,8 +99,11 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            num_kangaroos,
             false,
+            true,
             ProjectivePoint::GENERATOR,
+            0,
         )
     }
 
@@ -143,8 +149,38 @@ impl KangarooSolver {
             range_bits,
             dp_bits,
             num_kangaroos,
+            num_kangaroos,
+            true,
             true,
             base_point,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_base_no_dp_table(
+        ctx: GpuContext,
+        pubkey: Point,
+        start: U256,
+        range_bits: u32,
+        dp_bits: u32,
+        num_kangaroos: u32,
+        global_kangaroo_count: u32,
+        base_point: ProjectivePoint,
+        kangaroo_offset: u32,
+    ) -> Result<Self> {
+        Self::new_internal(
+            ctx,
+            pubkey,
+            start,
+            range_bits,
+            dp_bits,
+            num_kangaroos,
+            global_kangaroo_count,
+            false,
+            false,
+            base_point,
+            kangaroo_offset,
         )
     }
 
@@ -219,8 +255,15 @@ impl KangarooSolver {
         )?;
 
         // Initialize kangaroos
-        let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &base_point,
+            0,
+            num_kangaroos,
+        )?;
         upload_kangaroos(ctx, &buffers, &kangaroos)?;
 
         // Use start for key computation: k = start + tame_dist - wild_dist
@@ -237,7 +280,7 @@ impl KangarooSolver {
             ctx: ctx.clone(),
             pipeline: pipeline_clone,
             buffers,
-            dp_table: DPTable::new(start, pubkey, base_point),
+            dp_table: Some(DPTable::new(start, pubkey, base_point)),
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
@@ -333,8 +376,11 @@ impl KangarooSolver {
         range_bits: u32,
         dp_bits: u32,
         num_kangaroos: u32,
+        global_kangaroo_count: u32,
         verbose: bool,
+        with_dp_table: bool,
         base_point: ProjectivePoint,
+        kangaroo_offset: u32,
     ) -> Result<Self> {
         if verbose {
             info!("Generating jump table...");
@@ -376,8 +422,15 @@ impl KangarooSolver {
             info!("Config created: steps_per_call={}", steps_per_call);
         }
 
-        let kangaroos =
-            initialize_kangaroos(&pubkey, &start, range_bits, num_kangaroos, &base_point)?;
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &base_point,
+            kangaroo_offset,
+            global_kangaroo_count,
+        )?;
 
         if verbose {
             info!("Probing kernel variants (64/128)...");
@@ -418,7 +471,11 @@ impl KangarooSolver {
             ctx,
             pipeline,
             buffers,
-            dp_table: DPTable::new(start, pubkey, base_point),
+            dp_table: if with_dp_table {
+                Some(DPTable::new(start, pubkey, base_point))
+            } else {
+                None
+            },
             total_ops: 0,
             num_kangaroos,
             steps_per_call,
@@ -455,7 +512,7 @@ impl KangarooSolver {
     ///
     /// Uses double-buffered DP slots: compute + copy to staging happen in a
     /// single encoder, eliminating the conditional second round-trip.
-    pub fn step(&mut self) -> Result<Option<Vec<u8>>> {
+    pub fn step_collect(&mut self) -> Result<(Vec<GpuDistinguishedPoint>, u64)> {
         let slot = self.current_slot;
 
         let mut encoder = self
@@ -498,31 +555,45 @@ impl KangarooSolver {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        self.total_ops += (self.num_kangaroos as u64) * (self.steps_per_call as u64);
-
-        if self.total_ops % 10_000_000 < (self.num_kangaroos as u64 * self.steps_per_call as u64) {
-            let (tame, w1, w2) = self.dp_table.count_by_type();
-            tracing::info!(
-                "Ops: {}M | DPs: {} ({} tame, {} wild1, {} wild2)",
-                self.total_ops / 1_000_000,
-                self.dp_table.total_dps(),
-                tame,
-                w1,
-                w2
-            );
-        }
+        let ops_delta = (self.num_kangaroos as u64) * (self.steps_per_call as u64);
+        self.total_ops += ops_delta;
 
         let dps = self.read_slot_dps(slot)?;
-        if !dps.is_empty() {
+        self.reset_dp_count(slot)?;
+
+        self.current_slot = 1 - slot;
+        Ok((dps, ops_delta))
+    }
+
+    /// Run one batch of GPU operations.
+    ///
+    /// Uses double-buffered DP slots: compute + copy to staging happen in a
+    /// single encoder, eliminating the conditional second round-trip.
+    pub fn step(&mut self) -> Result<Option<Vec<u8>>> {
+        let (dps, ops_delta) = self.step_collect()?;
+
+        if self.total_ops % 10_000_000 < ops_delta {
+            if let Some(dp_table) = self.dp_table.as_ref() {
+                let (tame, w1, w2) = dp_table.count_by_type();
+                tracing::info!(
+                    "Ops: {}M | DPs: {} ({} tame, {} wild1, {} wild2)",
+                    self.total_ops / 1_000_000,
+                    dp_table.total_dps(),
+                    tame,
+                    w1,
+                    w2
+                );
+            }
+        }
+
+        if let Some(dp_table) = self.dp_table.as_mut() {
             for dp in dps {
-                if let Some(key) = self.dp_table.insert_and_check(dp) {
+                if let Some(key) = dp_table.insert_and_check(dp) {
                     return Ok(Some(key));
                 }
             }
-            self.reset_dp_count(slot)?;
         }
 
-        self.current_slot = 1 - slot;
         Ok(None)
     }
 

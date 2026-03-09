@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::ValueEnum;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use wgpu::util::DeviceExt;
 
 /// GPU backend selection
@@ -54,12 +54,137 @@ impl GpuBackend {
             GpuBackend::Gl => "OpenGL",
         }
     }
+
+    /// Convert from wgpu::Backend to GpuBackend
+    pub fn from_wgpu_backend(backend: wgpu::Backend) -> Self {
+        match backend {
+            wgpu::Backend::Vulkan => GpuBackend::Vulkan,
+            wgpu::Backend::Metal => GpuBackend::Metal,
+            wgpu::Backend::Dx12 => GpuBackend::Dx12,
+            wgpu::Backend::Gl => GpuBackend::Gl,
+            _ => GpuBackend::Auto,
+        }
+    }
 }
 
 impl std::fmt::Display for GpuBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
+}
+
+/// Information about a discovered GPU device
+#[derive(Debug, Clone)]
+pub struct GpuDeviceInfo {
+    /// Human-readable adapter name
+    pub name: String,
+    /// Device type (Discrete, Integrated, Virtual, CPU)
+    pub device_type: wgpu::DeviceType,
+    /// Backend (Vulkan, Metal, DX12, GL)
+    pub backend: wgpu::Backend,
+    /// Sequential index for CLI selection
+    pub index: u32,
+}
+
+/// Check if an adapter is a software renderer
+pub fn is_software_adapter(info: &wgpu::AdapterInfo) -> bool {
+    if info.device_type == wgpu::DeviceType::Cpu {
+        return true;
+    }
+    let name_lower = info.name.to_lowercase();
+    name_lower.contains("llvmpipe")
+        || name_lower.contains("swiftshader")
+        || name_lower.contains("software")
+        || name_lower.contains("lavapipe")
+        || name_lower.contains("mesa software")
+}
+
+/// Enumerate available GPU devices, sorted by priority
+///
+/// Filters software renderers unless no hardware GPU is found.
+/// Deduplicates adapters by name (same GPU under multiple backends).
+/// Sorts by device type (Discrete > Virtual > Integrated > CPU)
+/// and backend priority (Vulkan > Metal > DX12 > GL).
+pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
+    let backends = backend.to_wgpu_backends();
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
+
+    let adapters: Vec<_> = instance.enumerate_adapters(backends).await;
+    if adapters.is_empty() {
+        anyhow::bail!("No GPU adapters found");
+    }
+
+    // Collect adapter info with sorting key
+    let mut entries: Vec<(String, wgpu::DeviceType, wgpu::Backend, bool, u32, u32)> = adapters
+        .iter()
+        .map(|a| {
+            let info = a.get_info();
+            let software = is_software_adapter(&info);
+            let device_priority = match info.device_type {
+                wgpu::DeviceType::DiscreteGpu => 0,
+                wgpu::DeviceType::VirtualGpu => 1,
+                wgpu::DeviceType::IntegratedGpu => 2,
+                wgpu::DeviceType::Cpu => 3,
+                _ => 4,
+            };
+            let backend_priority = match info.backend {
+                wgpu::Backend::Vulkan => 0,
+                wgpu::Backend::Metal => 1,
+                wgpu::Backend::Dx12 => 2,
+                wgpu::Backend::Gl => 3,
+                _ => 4,
+            };
+            (
+                info.name.clone(),
+                info.device_type,
+                info.backend,
+                software,
+                device_priority,
+                backend_priority,
+            )
+        })
+        .collect();
+
+    // Sort by device type then backend priority
+    entries.sort_by_key(|e| (e.4, e.5));
+
+    // Filter software renderers unless no hardware found
+    let has_hardware = entries.iter().any(|e| !e.3 && e.4 < 3);
+    if has_hardware {
+        entries.retain(|e| !e.3 && e.4 < 3);
+    } else {
+        warn!("No hardware GPU found, listing software renderers");
+    }
+
+    // Deduplicate across backends: for each adapter name, keep only the best backend
+    // (lowest backend_priority). This preserves multiple physical GPUs of the same model
+    // on the same backend while removing cross-backend duplicates (e.g. Vulkan + GL).
+    let mut best_backend_by_name: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for e in &entries {
+        let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.5);
+        if e.5 < *current_best {
+            *current_best = e.5;
+        }
+    }
+    entries.retain(|e| e.5 == *best_backend_by_name.get(&e.0).unwrap());
+
+    // Assign sequential indices
+    let devices: Vec<GpuDeviceInfo> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, device_type, backend, _, _, _))| GpuDeviceInfo {
+            name,
+            device_type,
+            backend,
+            index: i as u32,
+        })
+        .collect();
+
+    Ok(devices)
 }
 
 #[derive(Clone)]
@@ -117,19 +242,6 @@ impl GpuContext {
         Err(anyhow!("No GPU backends available"))
     }
 
-    /// Check if adapter is a software renderer
-    fn is_software_adapter(info: &wgpu::AdapterInfo) -> bool {
-        if info.device_type == wgpu::DeviceType::Cpu {
-            return true;
-        }
-        let name_lower = info.name.to_lowercase();
-        name_lower.contains("llvmpipe")
-            || name_lower.contains("swiftshader")
-            || name_lower.contains("software")
-            || name_lower.contains("lavapipe")
-            || name_lower.contains("mesa software")
-    }
-
     /// Try to create context with specific backend
     async fn try_backend(
         device_index: u32,
@@ -146,7 +258,7 @@ impl GpuContext {
         let mut adapters: Vec<_> = instance.enumerate_adapters(backends).await;
 
         if hardware_only {
-            adapters.retain(|a| !Self::is_software_adapter(&a.get_info()));
+            adapters.retain(|a| !is_software_adapter(&a.get_info()));
         }
 
         if adapters.is_empty() {

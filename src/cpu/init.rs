@@ -83,6 +83,9 @@ pub fn generate_jump_table(
 /// Split into three sets: tame (ktype=0), wild_1 (ktype=1), wild_2 (ktype=2).
 /// Wild_2 uses the negated public key for cross-wild collision detection.
 ///
+/// `kangaroo_offset` shifts global indices so multiple GPU workers get unique positions.
+/// For single-GPU, pass 0. For multi-GPU, GPU N gets offset = N * num_kangaroos.
+///
 /// All range/offset math uses full 256-bit arithmetic to correctly handle
 /// range_bits >= 128 (fixes silent degradation from u128 clamping).
 pub fn initialize_kangaroos(
@@ -91,6 +94,8 @@ pub fn initialize_kangaroos(
     range_bits: u32,
     num_kangaroos: u32,
     base_point: &ProjectivePoint,
+    kangaroo_offset: u32,
+    global_kangaroo_count: u32,
 ) -> Result<Vec<GpuKangaroo>> {
     anyhow::ensure!(
         num_kangaroos >= 3,
@@ -114,8 +119,8 @@ pub fn initialize_kangaroos(
     );
 
     // Grid delta for even distribution (full 256-bit division)
-    let num_k = K256U256::from(num_kangaroos as u64);
-    let grid_delta = div_u256(&range_size, &num_k);
+    let total_k = K256U256::from(global_kangaroo_count.max(1) as u64);
+    let grid_delta = div_u256(&range_size, &total_k);
     let grid_delta = if grid_delta == K256U256::ZERO {
         K256U256::ONE
     } else {
@@ -140,10 +145,11 @@ pub fn initialize_kangaroos(
             };
 
             // Grid-based offset + small random jitter (all 256-bit)
-            let i_uint = K256U256::from(i as u64);
+            let global_i = kangaroo_offset + i;
+            let i_uint = K256U256::from(global_i as u64);
             let grid_pos = i_uint.wrapping_mul(&grid_delta);
 
-            let prng_seed = hash_seed(i, 0xCAFEBABE);
+            let prng_seed = hash_seed(global_i, 0xCAFEBABE);
             let jitter_span = grid_delta.shr_vartime(1);
             let jitter_span = if jitter_span == K256U256::ZERO {
                 K256U256::ONE
@@ -342,6 +348,8 @@ mod tests {
             range_bits,
             num_kangaroos,
             &ProjectivePoint::GENERATOR,
+            0,
+            num_kangaroos,
         )
         .unwrap();
         assert_eq!(kangaroos.len(), num_kangaroos as usize);
@@ -361,9 +369,57 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR);
+        let result =
+            initialize_kangaroos(&pubkey, &start, 20, 2, &ProjectivePoint::GENERATOR, 0, 2);
         assert!(result.is_err(), "Should fail for num_kangaroos < 3");
         assert!(result.unwrap_err().to_string().contains("at least 3"));
+    }
+
+    #[test]
+    fn test_multi_gpu_workers_have_disjoint_initial_states() {
+        use std::collections::HashSet;
+
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let range_bits = 24u32;
+        let per_gpu_k = 512u32;
+        let total_k = per_gpu_k * 2;
+
+        let gpu0 = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            per_gpu_k,
+            &ProjectivePoint::GENERATOR,
+            0,
+            total_k,
+        )
+        .unwrap();
+
+        let gpu1 = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            per_gpu_k,
+            &ProjectivePoint::GENERATOR,
+            per_gpu_k,
+            total_k,
+        )
+        .unwrap();
+
+        let gpu0_states: HashSet<([u32; 8], [u32; 8], [u32; 8], u32)> = gpu0
+            .iter()
+            .map(|k| (k.x, k.y, k.dist, k.ktype as u32))
+            .collect();
+
+        for k in &gpu1 {
+            let state = (k.x, k.y, k.dist, k.ktype as u32);
+            assert!(
+                !gpu0_states.contains(&state),
+                "GPU workers must not share initial kangaroo states"
+            );
+        }
     }
 
     /// Verify initialization works correctly for range_bits >= 128.
@@ -382,6 +438,8 @@ mod tests {
             range_bits,
             num_kangaroos,
             &ProjectivePoint::GENERATOR,
+            0,
+            num_kangaroos,
         )
         .unwrap();
 
@@ -414,6 +472,8 @@ mod tests {
             range_bits,
             num_kangaroos,
             &ProjectivePoint::GENERATOR,
+            0,
+            num_kangaroos,
         )
         .unwrap();
 
@@ -434,7 +494,8 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 256, 6, &ProjectivePoint::GENERATOR);
+        let result =
+            initialize_kangaroos(&pubkey, &start, 256, 6, &ProjectivePoint::GENERATOR, 0, 6);
         assert!(result.is_err());
     }
 
@@ -444,7 +505,7 @@ mod tests {
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
         let start = [0u8; 32];
-        let result = initialize_kangaroos(&pubkey, &start, 0, 6, &ProjectivePoint::GENERATOR);
+        let result = initialize_kangaroos(&pubkey, &start, 0, 6, &ProjectivePoint::GENERATOR, 0, 6);
         assert!(result.is_err());
     }
 
