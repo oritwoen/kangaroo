@@ -1072,13 +1072,14 @@ dependencies = [
 
 [[package]]
 name = "kangaroo"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "bitcoin",
  "boha",
  "bytemuck",
  "clap",
+ "crypto-bigint",
  "dashmap",
  "futures",
  "hex",

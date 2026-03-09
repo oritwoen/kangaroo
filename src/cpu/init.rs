@@ -47,27 +47,12 @@ pub fn generate_jump_table(
         }
 
         // Mask the top byte to ensure we don't exceed our target range
-        // If mean_exp=20, num_bytes=3. Top byte index is 32-3=29.
-        // 20 % 8 = 4. We want 4 bits (0..3) from the top byte?
-        // No, if mean_exp=20, we want values up to 2^20.
-        // Byte 31 (LSB) -> bits 0..7
-        // Byte 30 -> bits 8..15
-        // Byte 29 -> bits 16..23
-        // We want to mask Byte 29 to keep bits 16..19 (4 bits).
-        // 20 % 8 = 4.
-
         let rem = mean_exp % 8;
         if rem != 0 {
             let mask = (1u8 << rem) - 1;
             if 32 - limit_byte < 32 {
                 scalar_bytes[32 - limit_byte] &= mask;
             }
-        } else if limit_byte > 0 {
-            // If exact multiple of 8, we typically allow full byte?
-            // e.g. mean_exp=16. limit=2. Bytes 30, 31.
-            // We want up to 2^16? No, 2^16 requires 17 bits usually (bit 16 set).
-            // But here we are generating random offsets *up to* 2^mean_exp.
-            // So for 16, we probably want 0..2^16-1. So 2 full bytes is fine.
         }
 
         // Ensure at least 1
@@ -95,11 +80,14 @@ pub fn generate_jump_table(
 
 /// Initialize kangaroo positions.
 ///
-/// Split into three sets: tame (ktype=0), wild₁ (ktype=1), wild₂ (ktype=2).
-/// Wild₂ uses the negated public key for cross-wild collision detection.
+/// Split into three sets: tame (ktype=0), wild_1 (ktype=1), wild_2 (ktype=2).
+/// Wild_2 uses the negated public key for cross-wild collision detection.
 ///
 /// `kangaroo_offset` shifts global indices so multiple GPU workers get unique positions.
 /// For single-GPU, pass 0. For multi-GPU, GPU N gets offset = N * num_kangaroos.
+///
+/// All range/offset math uses full 256-bit arithmetic to correctly handle
+/// range_bits >= 128 (fixes silent degradation from u128 clamping).
 pub fn initialize_kangaroos(
     pubkey: &Point,
     start: &U256,
@@ -113,66 +101,34 @@ pub fn initialize_kangaroos(
         num_kangaroos >= 3,
         "Multi-set requires at least 3 kangaroos"
     );
+    anyhow::ensure!(
+        range_bits > 0 && range_bits <= 255,
+        "range_bits must be 1..=255"
+    );
 
     let one_third = num_kangaroos / 3;
 
-    // Handle the case where range_bits is 128 or more (u128 overflow)
-    // Actually our u128 math might overflow if range_bits=128, but usually it is <128.
-    // If range_bits=128, range_size=0 (overflow) in u128.
-    // But GpuKangaroo supports full 256 bits.
-    // For initialization we assume range < 128 bits for now as logic uses u128.
-
-    // Re-check range_size calculation to avoid panic on overflow if range_bits=128
-    let range_size = if range_bits >= 128 {
-        u128::MAX
-    } else {
-        1u128 << range_bits
-    };
-
-    let range_middle = if range_bits >= 128 {
-        u128::MAX / 2
-    } else {
-        1u128 << (range_bits - 1)
-    };
-
-    // Use u256_to_u128 for start (assuming start fits in 128 bits for this logic?
-    // No, start can be large.
-    // Wait, the original code used `u256_to_u128(start)`.
-    // If start is 256-bit (e.g. 0x8000...), `u256_to_u128` might truncate or panic?
-    // Let's check `convert.rs`.
-    // Assuming for now we are solving in a sub-range so start is arbitrary.
-    // But `init_tame_kangaroo` uses `start_val + tame_offset`.
-    // If start is large, we need full 256-bit arithmetic.
-    // The original code used u128 for offsets and simple math.
-    // We should stick to that assumption or improve it.
-    // Let's assume start fits in u128 OR we handle full scalar math.
-    // Since `init_tame_kangaroo_at_offset` takes `start_val: u128`, it seems the original code assumed
-    // start is small OR we only care about the lower 128 bits for the offset logic?
-    // NO, start is the base key. It can be large.
-    // `init_tame_kangaroo` in original code:
-    // `let tame_scalar = start_val + tame_offset;` where start_val is u128.
-    // This implies the original code ONLY supported start values < 2^128.
-    // That's a limitation of the original code. I will keep it for now but note it.
-    // Actually, let's fix it by passing `start` as U256 to the helper.
-
-    // Wait, let's stick to the interface.
-    // I will read `convert.rs` later to see `u256_to_u128`.
-    // For now, I'll restore `hash_seed` and the logic.
+    // Full 256-bit range arithmetic
+    let range_size = K256U256::ONE.shl_vartime(range_bits as usize);
+    let range_middle = K256U256::ONE.shl_vartime((range_bits - 1) as usize);
 
     tracing::debug!(
-        "Kangaroo init: range_bits={}, range_size=0x{:x}, range_middle=0x{:x}",
+        "Kangaroo init: range_bits={}, num_kangaroos={}",
         range_bits,
-        range_size,
-        range_middle
+        num_kangaroos
     );
 
-    // Grid delta for even distribution (S2 strategy)
-    let total_kangaroos = u128::from(global_kangaroo_count.max(1));
-    let grid_delta = if total_kangaroos > 0 {
-        (range_size / total_kangaroos).max(1)
+    // Grid delta for even distribution (full 256-bit division)
+    let total_k = K256U256::from(global_kangaroo_count.max(1) as u64);
+    let grid_delta = div_u256(&range_size, &total_k);
+    let grid_delta = if grid_delta == K256U256::ZERO {
+        K256U256::ONE
     } else {
-        range_size
+        grid_delta
     };
+
+    // Pre-compute NonZero range_size for modulo (always non-zero for range_bits > 0)
+    let nz_range = nonzero_u256(range_size);
 
     let neg_pubkey = pubkey.neg();
 
@@ -183,24 +139,34 @@ pub fn initialize_kangaroos(
             let ktype = if i < one_third {
                 0 // tame
             } else if i < 2 * one_third {
-                1 // wild₁
+                1 // wild_1
             } else {
-                2 // wild₂
+                2 // wild_2
             };
 
-            // Grid-based offset + small random jitter
+            // Grid-based offset + small random jitter (all 256-bit)
             let global_i = kangaroo_offset + i;
-            let grid_pos = (global_i as u128) * grid_delta;
-            let prng_seed = hash_seed(global_i, 0xCAFEBABE);
-            let jitter_span = (grid_delta / 2).max(1);
-            let jitter = prng_seed % jitter_span;
+            let i_uint = K256U256::from(global_i as u64);
+            let grid_pos = i_uint.wrapping_mul(&grid_delta);
 
-            let offset = (grid_pos + jitter) % range_size;
+            let prng_seed = hash_seed(global_i, 0xCAFEBABE);
+            let jitter_span = grid_delta.shr_vartime(1);
+            let jitter_span = if jitter_span == K256U256::ZERO {
+                K256U256::ONE
+            } else {
+                jitter_span
+            };
+
+            let seed_uint = u128_to_u256(prng_seed);
+            let jitter = rem_u256(&seed_uint, &jitter_span);
+
+            let sum = grid_pos.wrapping_add(&jitter);
+            let (_, offset) = sum.div_rem(&nz_range);
 
             let (point, dist) = match ktype {
-                0 => init_tame_kangaroo_at_offset(start, offset, base_point),
-                1 => init_wild_kangaroo_at_offset(pubkey, offset, range_middle, base_point),
-                _ => init_wild_kangaroo_at_offset(&neg_pubkey, offset, range_middle, base_point),
+                0 => init_tame_kangaroo_at_offset(start, &offset, base_point),
+                1 => init_wild_kangaroo_at_offset(pubkey, &offset, &range_middle, base_point),
+                _ => init_wild_kangaroo_at_offset(&neg_pubkey, &offset, &range_middle, base_point),
             };
 
             let gpu_point = affine_to_gpu(&point);
@@ -238,90 +204,101 @@ fn hash_seed(index: u32, salt: u64) -> u128 {
     ((h as u128) << 64) | (h2 as u128)
 }
 
-/// Initialize a tame kangaroo at a specific offset from start
+/// Convert u128 to K256U256.
+fn u128_to_u256(val: u128) -> K256U256 {
+    let mut le = [0u8; 32];
+    le[0..16].copy_from_slice(&val.to_le_bytes());
+    K256U256::from_le_slice(&le)
+}
+
+/// Extract big-endian [u8; 32] from K256U256 via limb decomposition.
+fn u256_to_be_bytes(val: &K256U256) -> [u8; 32] {
+    let limbs = val.as_limbs();
+    let n = limbs.len();
+    let mut bytes = [0u8; 32];
+    for i in 0..n {
+        let be = limbs[n - 1 - i].0.to_be_bytes();
+        let sz = be.len();
+        bytes[i * sz..(i + 1) * sz].copy_from_slice(&be);
+    }
+    bytes
+}
+
+/// Divide two K256U256 values. Returns zero if divisor is zero.
+fn div_u256(a: &K256U256, b: &K256U256) -> K256U256 {
+    if *b == K256U256::ZERO {
+        return K256U256::ZERO;
+    }
+    let nz = nonzero_u256(*b);
+    let (q, _) = a.div_rem(&nz);
+    q
+}
+
+/// Remainder of K256U256 division. Returns `a` if divisor is zero.
+fn rem_u256(a: &K256U256, b: &K256U256) -> K256U256 {
+    if *b == K256U256::ZERO {
+        return *a;
+    }
+    let nz = nonzero_u256(*b);
+    let (_, r) = a.div_rem(&nz);
+    r
+}
+
+/// Create NonZero<K256U256>. Panics on zero.
+fn nonzero_u256(val: K256U256) -> crypto_bigint::NonZero<K256U256> {
+    Option::from(crypto_bigint::NonZero::new(val)).expect("value must be non-zero")
+}
+
+/// Initialize a tame kangaroo at a specific offset from start.
 fn init_tame_kangaroo_at_offset(
     start: &U256,
-    offset: u128,
+    offset: &K256U256,
     base_point: &ProjectivePoint,
 ) -> (k256::AffinePoint, [u32; 8]) {
-    // Convert start (U256) to Scalar
-    // U256 is usually little-endian or we need to check crate::crypto::U256
-    // In `tools/kangaroo/src/crypto/mod.rs` likely uses `k256::U256` or custom.
-    // The original code used `u256_to_u128` which implies `start` might be compatible.
-    // Let's assume we can convert `start` to big-endian bytes.
-    // `start.to_be_bytes()`?
-    // Let's use `u256_to_u128` if we assume start is small, OR fix the math.
-    // BETTER: Use `k256::U256` add.
-
-    // Since I don't know the exact `U256` type (it's imported from `crate::crypto::U256`),
-    // I will use `u256_to_u128` as per original logic if I can't find better,
-    // BUT the original code passed `start_val: u128`.
-    // I changed the signature to `start: &U256`.
-
-    // Let's assume start fits in u128 for now to minimize breakage or check `crypto::U256`.
-    // Actually, looking at `cpu/solver.rs`: `start: U256`.
-    // `u256_to_u128` is imported from `crate::convert`.
-
-    // Convert start (LE bytes) to K256U256
     let start_uint = K256U256::from_le_slice(start);
-
-    // Convert offset to K256U256
-    let mut offset_le = [0u8; 32];
-    offset_le[0..16].copy_from_slice(&offset.to_le_bytes());
-    let offset_uint = K256U256::from_le_slice(&offset_le);
-
-    // Add to get absolute scalar
-    let sum = start_uint.wrapping_add(&offset_uint);
-
+    let sum = start_uint.wrapping_add(offset);
     let scalar = Scalar::reduce(sum);
     let point = *base_point * scalar;
 
-    // Store offset as dist (relative to start)
-    // Distance tracks the offset from start, so it fits in u128 (range size)
-    let mut offset_bytes = [0u8; 32];
-    offset_bytes[16..].copy_from_slice(&offset.to_be_bytes());
-
-    (point.to_affine(), scalar_be_to_limbs(&offset_bytes))
+    // Distance = offset relative to start (full 256-bit)
+    let offset_be = u256_to_be_bytes(offset);
+    (point.to_affine(), scalar_be_to_limbs(&offset_be))
 }
 
-/// Initialize a wild kangaroo at a specific offset
+/// Initialize a wild kangaroo at a specific offset, centered around the range midpoint.
+///
+/// Maps raw offset in `[0, range)` to centered offset in `[-range/2, range/2)`.
+/// Uses `sbb` (subtract-with-borrow) for sign detection in full 256-bit space.
 fn init_wild_kangaroo_at_offset(
     pubkey: &Point,
-    raw_offset: u128,
-    range_middle: u128,
+    raw_offset: &K256U256,
+    range_middle: &K256U256,
     base_point: &ProjectivePoint,
 ) -> (k256::AffinePoint, [u32; 8]) {
-    // Center the offset: map [0, range) to [-range/2, range/2)
-    let centered_offset = raw_offset as i128 - range_middle as i128;
+    // Detect sign: sbb returns borrow != 0 when raw_offset < range_middle
+    let (diff, borrow) = raw_offset.sbb(range_middle, k256::elliptic_curve::bigint::Limb::ZERO);
+    let is_negative = borrow != k256::elliptic_curve::bigint::Limb::ZERO;
 
-    if centered_offset >= 0 {
-        let offset = centered_offset as u128;
-        let mut offset_bytes = [0u8; 32];
-        offset_bytes[16..].copy_from_slice(&offset.to_be_bytes());
-
-        let scalar_uint = K256U256::from_be_slice(&offset_bytes);
-        let scalar = Scalar::reduce(scalar_uint);
+    if !is_negative {
+        // raw_offset >= range_middle: positive direction
+        // diff = raw_offset - range_middle (exact, no wrap)
+        let scalar = Scalar::reduce(diff);
         let offset_point = *base_point * scalar;
         let wild_point = *pubkey + offset_point;
 
-        (wild_point.to_affine(), scalar_be_to_limbs(&offset_bytes))
+        let delta_be = u256_to_be_bytes(&diff);
+        (wild_point.to_affine(), scalar_be_to_limbs(&delta_be))
     } else {
-        // Negative offset: subtract from pubkey
-        let abs_offset = (-centered_offset) as u128;
-        let mut offset_bytes = [0u8; 32];
-        offset_bytes[16..].copy_from_slice(&abs_offset.to_be_bytes());
-
-        let scalar_uint = K256U256::from_be_slice(&offset_bytes);
-        let scalar = Scalar::reduce(scalar_uint);
+        // raw_offset < range_middle: negative direction
+        let delta = range_middle.wrapping_sub(raw_offset);
+        let scalar = Scalar::reduce(delta);
         let offset_point = *base_point * scalar;
         let wild_point = *pubkey - offset_point;
 
         // Store negative offset as two's complement
-        let neg_offset_bytes = negate_256_be(&offset_bytes);
-        (
-            wild_point.to_affine(),
-            scalar_be_to_limbs(&neg_offset_bytes),
-        )
+        let delta_be = u256_to_be_bytes(&delta);
+        let neg_bytes = negate_256_be(&delta_be);
+        (wild_point.to_affine(), scalar_be_to_limbs(&neg_bytes))
     }
 }
 
@@ -331,38 +308,26 @@ mod tests {
 
     #[test]
     fn test_wild2_init_with_negated_pubkey() {
-        // Use puzzle 20 pubkey from test fixtures
         let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
         let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
-
-        // Negate the pubkey
         let neg_pubkey = pubkey.neg();
 
-        // Use range_bits=20, so range_middle = 2^19
-        let range_bits = 20u32;
-        let range_middle = 1u128 << (range_bits - 1);
+        let range_middle = K256U256::ONE.shl_vartime(19);
+        let offset = K256U256::from(1000u64);
 
-        // Use a small offset
-        let offset = 1000u128;
-
-        // Initialize wild kangaroo with negated pubkey
         let (point, dist) = init_wild_kangaroo_at_offset(
             &neg_pubkey,
-            offset,
-            range_middle,
+            &offset,
+            &range_middle,
             &ProjectivePoint::GENERATOR,
         );
 
-        // Convert to GPU format to check x and dist
         let gpu_point = affine_to_gpu(&point);
 
-        // Assert that x has at least one non-zero element
         assert!(
             gpu_point.x.iter().any(|&x| x != 0),
             "GPU point x should have at least one non-zero element"
         );
-
-        // Assert that dist has at least one non-zero element
         assert!(
             dist.iter().any(|&d| d != 0),
             "Distance should have at least one non-zero element"
@@ -393,7 +358,6 @@ mod tests {
         let wild1 = kangaroos.iter().filter(|k| k.ktype == 1).count();
         let wild2 = kangaroos.iter().filter(|k| k.ktype == 2).count();
 
-        // 4096 / 3 = 1365 remainder 1 → tame=1365, wild₁=1365, wild₂=1366
         assert_eq!(tame, 1365);
         assert_eq!(wild1, 1365);
         assert_eq!(wild2, 1366);
@@ -456,5 +420,105 @@ mod tests {
                 "GPU workers must not share initial kangaroo states"
             );
         }
+    }
+
+    /// Verify initialization works correctly for range_bits >= 128.
+    /// This is the core regression test for issue #70.
+    #[test]
+    fn test_initialize_kangaroos_large_range() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let range_bits = 135u32;
+        let num_kangaroos = 6u32;
+
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &ProjectivePoint::GENERATOR,
+            0,
+            num_kangaroos,
+        )
+        .unwrap();
+
+        assert_eq!(kangaroos.len(), num_kangaroos as usize);
+
+        for k in &kangaroos {
+            assert!(
+                k.x.iter().any(|&v| v != 0),
+                "kangaroo should have non-zero position"
+            );
+        }
+
+        assert!(kangaroos.iter().any(|k| k.ktype == 0));
+        assert!(kangaroos.iter().any(|k| k.ktype == 1));
+        assert!(kangaroos.iter().any(|k| k.ktype == 2));
+    }
+
+    /// Verify initialization at range_bits = 200 (well above u128 limit).
+    #[test]
+    fn test_initialize_kangaroos_200bit_range() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let range_bits = 200u32;
+        let num_kangaroos = 9u32;
+
+        let kangaroos = initialize_kangaroos(
+            &pubkey,
+            &start,
+            range_bits,
+            num_kangaroos,
+            &ProjectivePoint::GENERATOR,
+            0,
+            num_kangaroos,
+        )
+        .unwrap();
+
+        assert_eq!(kangaroos.len(), num_kangaroos as usize);
+
+        for k in &kangaroos {
+            assert!(
+                k.x.iter().any(|&v| v != 0),
+                "kangaroo should have non-zero position"
+            );
+            assert_eq!(k.is_active, 1);
+        }
+    }
+
+    /// range_bits > 255 must fail (2^256 overflows U256).
+    #[test]
+    fn test_range_bits_overflow_rejected() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let result =
+            initialize_kangaroos(&pubkey, &start, 256, 6, &ProjectivePoint::GENERATOR, 0, 6);
+        assert!(result.is_err());
+    }
+
+    /// range_bits = 0 must fail.
+    #[test]
+    fn test_range_bits_zero_rejected() {
+        let pubkey_hex = "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c";
+        let pubkey = crate::crypto::parse_pubkey(pubkey_hex).expect("Failed to parse pubkey");
+        let start = [0u8; 32];
+        let result = initialize_kangaroos(&pubkey, &start, 0, 6, &ProjectivePoint::GENERATOR, 0, 6);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_u256_be_bytes_roundtrip() {
+        let val = K256U256::from(0xDEAD_BEEF_u64);
+        let be = u256_to_be_bytes(&val);
+        let recovered = K256U256::from_be_slice(&be);
+        assert_eq!(val, recovered);
+
+        let large = K256U256::ONE.shl_vartime(200);
+        let be2 = u256_to_be_bytes(&large);
+        let recovered2 = K256U256::from_be_slice(&be2);
+        assert_eq!(large, recovered2);
     }
 }
