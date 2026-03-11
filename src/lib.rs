@@ -441,6 +441,28 @@ fn filter_integrated_from_all_selection(
     }
 }
 
+fn resolve_backend_and_local_index(
+    selected_global_index: u32,
+    gpu_devices: &[gpu_crypto::GpuDeviceInfo],
+    fallback_backend: gpu_crypto::GpuBackend,
+) -> (gpu_crypto::GpuBackend, u32) {
+    let Some(selected) = gpu_devices
+        .iter()
+        .find(|d| d.index == selected_global_index)
+    else {
+        return (fallback_backend, selected_global_index);
+    };
+
+    let backend = gpu_crypto::GpuBackend::from_wgpu_backend(selected.backend);
+    let local_index = gpu_devices
+        .iter()
+        .take_while(|d| d.index != selected_global_index)
+        .filter(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend) == backend)
+        .count() as u32;
+
+    (backend, local_index)
+}
+
 fn gpu_weight_for_device_type(device_type: wgpu::DeviceType) -> u32 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 8,
@@ -720,6 +742,33 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if args.benchmark {
+        if args.cpu {
+            return Err(anyhow!(
+                "--benchmark currently supports GPU only; remove --cpu"
+            ));
+        }
+
+        let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
+        let gpu_indices = filter_integrated_from_all_selection(
+            parse_gpu_selection(&args.gpu, gpu_devices.len())?,
+            &gpu_devices,
+            &args.gpu,
+            args.include_integrated,
+        );
+
+        if gpu_indices.len() > 1 {
+            return Err(anyhow!(
+                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
+            ));
+        }
+
+        let (bench_backend, bench_device_index) =
+            resolve_backend_and_local_index(gpu_indices[0], &gpu_devices, args.backend);
+
+        return benchmark::run(bench_device_index, bench_backend, args.save_benchmarks);
+    }
+
     let params = resolve_params(&args)?;
     if !args.quiet && !args.json {
         info!("Kangaroo ECDLP Solver");
@@ -874,15 +923,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         &args.gpu,
         args.include_integrated,
     );
-
-    if args.benchmark {
-        if gpu_indices.len() > 1 {
-            return Err(anyhow!(
-                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
-            ));
-        }
-        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
-    }
 
     if gpu_indices.len() == 1 {
         let single_backend = gpu_devices
@@ -1520,6 +1560,14 @@ mod cli_tests {
     }
 
     #[test]
+    fn test_cli_cpu_benchmark_combo_returns_clear_error() {
+        let err = run_from_args(["kangaroo", "--cpu", "--benchmark"]).expect_err("should fail");
+        assert!(err
+            .to_string()
+            .contains("--benchmark currently supports GPU only; remove --cpu"));
+    }
+
+    #[test]
     fn test_parse_gpu_selection_single() {
         assert_eq!(parse_gpu_selection("0", 4).unwrap(), vec![0]);
         assert_eq!(parse_gpu_selection("2", 4).unwrap(), vec![2]);
@@ -1575,6 +1623,19 @@ mod cli_tests {
         }
     }
 
+    fn mk_gpu_backend(
+        index: u32,
+        device_type: wgpu::DeviceType,
+        backend: wgpu::Backend,
+    ) -> gpu_crypto::GpuDeviceInfo {
+        gpu_crypto::GpuDeviceInfo {
+            name: format!("gpu-{index}"),
+            device_type,
+            backend,
+            index,
+        }
+    }
+
     #[test]
     fn test_filter_integrated_from_all_selection_drops_integrated_when_discrete_present() {
         let devices = vec![
@@ -1606,5 +1667,48 @@ mod cli_tests {
         let selected = vec![1];
         let out = filter_integrated_from_all_selection(selected, &devices, "1", false);
         assert_eq!(out, vec![1]);
+    }
+
+    #[test]
+    fn test_resolve_backend_and_local_index_maps_global_to_backend_local() {
+        let devices = vec![
+            mk_gpu_backend(0, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
+            mk_gpu_backend(1, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Metal),
+            mk_gpu_backend(2, wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+            mk_gpu_backend(3, wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Metal),
+        ];
+
+        let (backend, local) =
+            resolve_backend_and_local_index(2, &devices, gpu_crypto::GpuBackend::Auto);
+        assert_eq!(backend, gpu_crypto::GpuBackend::Vulkan);
+        assert_eq!(local, 1);
+    }
+
+    #[test]
+    fn test_resolve_backend_and_local_index_fallback_for_unknown_index() {
+        let devices = vec![mk_gpu_backend(
+            0,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::Backend::Vulkan,
+        )];
+
+        let (backend, local) =
+            resolve_backend_and_local_index(5, &devices, gpu_crypto::GpuBackend::Dx12);
+        assert_eq!(backend, gpu_crypto::GpuBackend::Dx12);
+        assert_eq!(local, 5);
+    }
+
+    #[test]
+    fn test_resolve_backend_and_local_index_uses_slice_order_not_numeric_index() {
+        let devices = vec![
+            mk_gpu_backend(10, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
+            mk_gpu_backend(2, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Metal),
+            mk_gpu_backend(30, wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+        ];
+
+        let (backend, local) =
+            resolve_backend_and_local_index(30, &devices, gpu_crypto::GpuBackend::Auto);
+        assert_eq!(backend, gpu_crypto::GpuBackend::Vulkan);
+        assert_eq!(local, 1);
     }
 }
