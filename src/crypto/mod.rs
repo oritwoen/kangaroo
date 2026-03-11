@@ -33,6 +33,14 @@ pub fn parse_pubkey(hex_str: &str) -> Result<Point> {
 /// Parse hex string to U256
 pub fn parse_hex_u256(hex_str: &str) -> Result<U256> {
     let hex_clean = hex_str.trim_start_matches("0x");
+
+    if hex_clean.len() > 64 {
+        anyhow::bail!(
+            "Invalid U256 length: {} hex chars (max 64)",
+            hex_clean.len()
+        );
+    }
+
     let padded = format!("{:0>64}", hex_clean);
 
     let bytes = hex::decode(&padded).context("Invalid hex")?;
@@ -233,5 +241,21 @@ mod tests {
             !verify_key(&j_bytes, &q),
             "verify_key with generator should return false (5*G ≠ 15*G)"
         );
+    }
+
+    #[test]
+    fn test_parse_hex_u256_rejects_too_long_input() {
+        let too_long = "11".repeat(33);
+        let err = parse_hex_u256(&too_long).unwrap_err();
+        assert!(err.to_string().contains("Invalid U256 length"));
+    }
+
+    #[test]
+    fn test_parse_hex_u256_accepts_short_hex() {
+        let parsed = parse_hex_u256("abcde").unwrap();
+        assert_eq!(parsed[0], 0xde);
+        assert_eq!(parsed[1], 0xbc);
+        assert_eq!(parsed[2], 0x0a);
+        assert!(parsed[3..].iter().all(|&b| b == 0));
     }
 }
