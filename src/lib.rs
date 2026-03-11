@@ -720,6 +720,30 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if args.benchmark {
+        if args.cpu {
+            return Err(anyhow!(
+                "--benchmark currently supports GPU only; remove --cpu"
+            ));
+        }
+
+        let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
+        let gpu_indices = filter_integrated_from_all_selection(
+            parse_gpu_selection(&args.gpu, gpu_devices.len())?,
+            &gpu_devices,
+            &args.gpu,
+            args.include_integrated,
+        );
+
+        if gpu_indices.len() > 1 {
+            return Err(anyhow!(
+                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
+            ));
+        }
+
+        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
+    }
+
     let params = resolve_params(&args)?;
     if !args.quiet && !args.json {
         info!("Kangaroo ECDLP Solver");
@@ -874,15 +898,6 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         &args.gpu,
         args.include_integrated,
     );
-
-    if args.benchmark {
-        if gpu_indices.len() > 1 {
-            return Err(anyhow!(
-                "Benchmark mode only supports a single GPU. Use --gpu N to select one."
-            ));
-        }
-        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
-    }
 
     if gpu_indices.len() == 1 {
         let single_backend = gpu_devices
@@ -1517,6 +1532,14 @@ mod cli_tests {
     fn test_cli_list_gpus_flag() {
         let args = Args::try_parse_from(["kangaroo", "--list-gpus"]).expect("Failed to parse args");
         assert!(args.list_gpus);
+    }
+
+    #[test]
+    fn test_cli_cpu_benchmark_combo_returns_clear_error() {
+        let err = run_from_args(["kangaroo", "--cpu", "--benchmark"]).expect_err("should fail");
+        assert!(err
+            .to_string()
+            .contains("--benchmark currently supports GPU only; remove --cpu"));
     }
 
     #[test]
