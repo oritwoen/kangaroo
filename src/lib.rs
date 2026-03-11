@@ -741,7 +741,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             ));
         }
 
-        return benchmark::run(gpu_indices[0], args.backend, args.save_benchmarks);
+        let bench_backend = gpu_devices
+            .iter()
+            .find(|d| d.index == gpu_indices[0])
+            .map(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend))
+            .unwrap_or(args.backend);
+
+        return benchmark::run(gpu_indices[0], bench_backend, args.save_benchmarks);
     }
 
     let params = resolve_params(&args)?;
