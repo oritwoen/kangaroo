@@ -65,7 +65,7 @@ kangaroo --pubkey <PUBKEY> --start <START> --range <BITS>
 | `-t, --target` | - | Data provider target (e.g., `boha:b1000/135`) |
 | `-p, --pubkey` | - | Target public key (compressed hex, 33 bytes) |
 | `-s, --start` | 0 | Start of search range (hex, without 0x prefix) |
-| `-r, --range` | 32 | Search range in bits (key is in [start, start + 2^range]) |
+| `-r, --range` | 32 | Search range in bits (key is in [start, start + 2^range - 1]) |
 | `-d, --dp-bits` | auto | Distinguished point bits |
 | `-k, --kangaroos` | auto | Number of parallel kangaroos |
 | `--gpu` | 0 | GPU device index |

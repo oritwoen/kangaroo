@@ -44,7 +44,7 @@ use tracing::{error, info};
 
 /// Pollard's Kangaroo ECDLP solver for secp256k1
 ///
-/// Finds private key k such that P = k*G, given that k is in range [start, start + 2^range_bits]
+/// Finds private key k such that P = k*G, given that k is in range [start, start + 2^range_bits - 1]
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -56,7 +56,7 @@ pub struct Args {
     #[arg(short, long)]
     start: Option<String>,
 
-    /// Bit range to search (key is in [start, start + 2^range])
+    /// Bit range to search (key is in [start, start + 2^range - 1])
     #[arg(short, long)]
     range: Option<u32>,
 
@@ -306,7 +306,7 @@ fn validate_search_bounds(
         ));
     }
 
-    let search_end = &start_val + (BigUint::from(1u64) << range_bits);
+    let search_end = &start_val + (BigUint::from(1u64) << range_bits) - BigUint::from(1u32);
     if search_end > provider_end_val {
         return Err(anyhow!(
             "Search range [0x{}..0x{:x}] exceeds puzzle '{}' maximum 0x{}",
@@ -1403,10 +1403,14 @@ mod tests {
 
     #[test]
     fn test_validate_search_bounds_exact_fit() {
-        // Range [0x20..., 0x40...) is exactly 2^65 wide
-        // Starting at 0x20... with range 65 bits should fit exactly
         let pr = make_provider_result("20000000000000000", "40000000000000000");
         assert!(validate_search_bounds("20000000000000000", 65, &pr).is_ok());
+    }
+
+    #[test]
+    fn test_validate_search_bounds_exact_fit_8_bit_inclusive() {
+        let pr = make_provider_result("0", "ff");
+        assert!(validate_search_bounds("0", 8, &pr).is_ok());
     }
 }
 
