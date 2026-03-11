@@ -456,10 +456,8 @@ fn resolve_backend_and_local_index(
     let backend = gpu_crypto::GpuBackend::from_wgpu_backend(selected.backend);
     let local_index = gpu_devices
         .iter()
-        .filter(|d| {
-            d.index < selected_global_index
-                && gpu_crypto::GpuBackend::from_wgpu_backend(d.backend) == backend
-        })
+        .take_while(|d| d.index != selected_global_index)
+        .filter(|d| gpu_crypto::GpuBackend::from_wgpu_backend(d.backend) == backend)
         .count() as u32;
 
     (backend, local_index)
@@ -1698,5 +1696,19 @@ mod cli_tests {
             resolve_backend_and_local_index(5, &devices, gpu_crypto::GpuBackend::Dx12);
         assert_eq!(backend, gpu_crypto::GpuBackend::Dx12);
         assert_eq!(local, 5);
+    }
+
+    #[test]
+    fn test_resolve_backend_and_local_index_uses_slice_order_not_numeric_index() {
+        let devices = vec![
+            mk_gpu_backend(10, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
+            mk_gpu_backend(2, wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Metal),
+            mk_gpu_backend(30, wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+        ];
+
+        let (backend, local) =
+            resolve_backend_and_local_index(30, &devices, gpu_crypto::GpuBackend::Auto);
+        assert_eq!(backend, gpu_crypto::GpuBackend::Vulkan);
+        assert_eq!(local, 1);
     }
 }
