@@ -12,8 +12,13 @@ use crate::gpu::{
 use crate::math::create_dp_mask;
 use anyhow::{anyhow, Result};
 use k256::ProjectivePoint;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::info;
+
+/// Maximum time to wait for a single GPU poll before treating the device as unresponsive.
+/// Generous enough for slow GPUs with high steps_per_call, short enough to unblock
+/// multi-GPU shutdown and avoid indefinite hangs on wedged drivers.
+const GPU_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
 /// Target dispatch time in milliseconds (stay under TDR threshold)
@@ -618,9 +623,12 @@ impl KangarooSolver {
 
         self.ctx
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(GPU_POLL_TIMEOUT),
+            })
             .map_err(|e| {
-                anyhow!("Failed to poll GPU device while reading DP staging buffer: {e:?}")
+                anyhow!("GPU poll timed out or failed reading DP staging buffer: {e:?}")
             })?;
 
         let map_result = rx
@@ -760,8 +768,11 @@ impl KangarooSolver {
 
         ctx.queue.submit(Some(encoder.finish()));
         ctx.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| anyhow!("Failed to poll during dispatch: {e:?}"))?;
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(GPU_POLL_TIMEOUT),
+            })
+            .map_err(|e| anyhow!("GPU poll timed out or failed during dispatch: {e:?}"))?;
 
         Ok(())
     }
