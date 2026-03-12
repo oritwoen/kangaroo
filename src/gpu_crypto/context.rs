@@ -407,36 +407,4 @@ impl GpuContext {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
     }
-
-    /// Read data from a mappable buffer (async)
-    pub async fn read_buffer<T: bytemuck::Pod + Clone>(
-        &self,
-        buffer: &wgpu::Buffer,
-        offset: u64,
-        count: u64,
-    ) -> Result<Vec<T>> {
-        let size = count * std::mem::size_of::<T>() as u64;
-        let slice = buffer.slice(offset..offset + size);
-
-        let (tx, rx) = futures::channel::oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| anyhow!("Failed to poll GPU device for buffer read: {e:?}"))?;
-
-        let map_result = rx
-            .await
-            .map_err(|_| anyhow!("Buffer map callback channel was dropped"))?;
-        map_result.map_err(|e| anyhow!("Failed to map GPU buffer for reading: {e:?}"))?;
-
-        let data = slice.get_mapped_range();
-        let result: Vec<T> = bytemuck::cast_slice(&data).to_vec();
-        drop(data);
-        buffer.unmap();
-
-        Ok(result)
-    }
 }
