@@ -407,5 +407,4 @@ impl GpuContext {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
     }
-
 }
