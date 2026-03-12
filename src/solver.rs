@@ -2,15 +2,14 @@
 //!
 //! Coordinates GPU compute with CPU collision detection.
 
-use crate::cpu::init::{generate_jump_table, initialize_kangaroos};
+use crate::cpu::init::{generate_jump_tables, initialize_kangaroos};
 use crate::cpu::DPTable;
 use crate::crypto::{Point, U256};
 use crate::gpu::{
     GpuBuffers, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, KangarooPipeline,
     WorkgroupVariant,
 };
-use crate::math::create_dp_mask;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 use k256::ProjectivePoint;
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -21,6 +20,7 @@ use tracing::info;
 const GPU_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
+const JUMP_TABLE_SIZE: u32 = 256;
 /// Target dispatch time in milliseconds (stay under TDR threshold)
 const TARGET_DISPATCH_MS: u128 = 50;
 
@@ -60,6 +60,13 @@ pub struct KangarooSolver {
 }
 
 impl KangarooSolver {
+    fn dp_meta(dp_bits: u32) -> [u32; 4] {
+        let full_limbs = (dp_bits / 32).min(8);
+        let rem = dp_bits % 32;
+        let partial_mask = if rem == 0 { 0 } else { (1u32 << rem) - 1 };
+        [full_limbs, partial_mask, 0, 0]
+    }
+
     fn cycle_cap_for(dp_bits: u32) -> u32 {
         let exp = (dp_bits / 2).min(31);
         512u32.max(2u32.pow(exp))
@@ -222,11 +229,19 @@ impl KangarooSolver {
         num_kangaroos: u32,
         base_point: ProjectivePoint,
     ) -> Result<Self> {
-        let jump_table_size = 256u32;
-        let (jump_points, jump_distances) = generate_jump_table(range_bits, &base_point);
+        let jump_table_size = JUMP_TABLE_SIZE;
+        let (jump_points, jump_distances, escape_points, escape_distances) =
+            generate_jump_tables(range_bits, &base_point);
+        ensure!(
+            jump_points.len() == JUMP_TABLE_SIZE as usize
+                && jump_distances.len() == JUMP_TABLE_SIZE as usize
+                && escape_points.len() == JUMP_TABLE_SIZE as usize
+                && escape_distances.len() == JUMP_TABLE_SIZE as usize,
+            "jump/escape tables must have {} entries",
+            JUMP_TABLE_SIZE
+        );
 
-        // Create DP mask
-        let dp_mask = create_dp_mask(dp_bits);
+        let dp_meta = Self::dp_meta(dp_bits);
 
         // Config
         // Use optimal steps per call from context (calibrated for 2s limit)
@@ -239,8 +254,7 @@ impl KangarooSolver {
 
         let cycle_cap = Self::cycle_cap_for(dp_bits);
         let config = GpuConfig {
-            dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
-            dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
+            dp_meta,
             num_kangaroos,
             steps_per_call,
             jump_table_size,
@@ -255,6 +269,8 @@ impl KangarooSolver {
             &config,
             &jump_points,
             &jump_distances,
+            &escape_points,
+            &escape_distances,
             num_kangaroos,
             max_dps,
         )?;
@@ -300,6 +316,8 @@ impl KangarooSolver {
         config: &GpuConfig,
         jump_points: &[crate::gpu::GpuAffinePoint],
         jump_distances: &[[u32; 8]],
+        escape_points: &[crate::gpu::GpuAffinePoint],
+        escape_distances: &[[u32; 8]],
         kangaroos: &[GpuKangaroo],
         num_kangaroos: u32,
     ) -> Result<(KangarooPipeline, u128)> {
@@ -310,6 +328,8 @@ impl KangarooSolver {
             config,
             jump_points,
             jump_distances,
+            escape_points,
+            escape_distances,
             num_kangaroos,
             MAX_DISTINGUISHED_POINTS,
         )?;
@@ -333,6 +353,8 @@ impl KangarooSolver {
         config: &GpuConfig,
         jump_points: &[crate::gpu::GpuAffinePoint],
         jump_distances: &[[u32; 8]],
+        escape_points: &[crate::gpu::GpuAffinePoint],
+        escape_distances: &[[u32; 8]],
         kangaroos: &[GpuKangaroo],
         num_kangaroos: u32,
         verbose: bool,
@@ -351,6 +373,8 @@ impl KangarooSolver {
                 config,
                 jump_points,
                 jump_distances,
+                escape_points,
+                escape_distances,
                 kangaroos,
                 num_kangaroos,
             )?;
@@ -393,8 +417,17 @@ impl KangarooSolver {
         if verbose {
             info!("Generating jump table...");
         }
-        let jump_table_size = 256u32;
-        let (jump_points, jump_distances) = generate_jump_table(range_bits, &base_point);
+        let jump_table_size = JUMP_TABLE_SIZE;
+        let (jump_points, jump_distances, escape_points, escape_distances) =
+            generate_jump_tables(range_bits, &base_point);
+        ensure!(
+            jump_points.len() == JUMP_TABLE_SIZE as usize
+                && jump_distances.len() == JUMP_TABLE_SIZE as usize
+                && escape_points.len() == JUMP_TABLE_SIZE as usize
+                && escape_distances.len() == JUMP_TABLE_SIZE as usize,
+            "jump/escape tables must have {} entries",
+            JUMP_TABLE_SIZE
+        );
         if verbose {
             info!("Jump table generated: {} entries", jump_table_size);
             for (i, dist) in jump_distances.iter().enumerate().take(4) {
@@ -402,8 +435,7 @@ impl KangarooSolver {
             }
         }
 
-        // Create DP mask
-        let dp_mask = create_dp_mask(dp_bits);
+        let dp_meta = Self::dp_meta(dp_bits);
         if verbose {
             info!("DP mask created");
         }
@@ -419,8 +451,7 @@ impl KangarooSolver {
 
         let cycle_cap = Self::cycle_cap_for(dp_bits);
         let config = GpuConfig {
-            dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
-            dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
+            dp_meta,
             num_kangaroos,
             steps_per_call,
             jump_table_size,
@@ -448,6 +479,8 @@ impl KangarooSolver {
             &config,
             &jump_points,
             &jump_distances,
+            &escape_points,
+            &escape_distances,
             &kangaroos,
             num_kangaroos,
             verbose,
@@ -468,6 +501,8 @@ impl KangarooSolver {
             &config,
             &jump_points,
             &jump_distances,
+            &escape_points,
+            &escape_distances,
             num_kangaroos,
             max_dps,
         )?;
@@ -497,11 +532,10 @@ impl KangarooSolver {
         // Update config buffer with calibrated value and correct DP mask
         let cycle_cap = Self::cycle_cap_for(dp_bits);
         let final_config = GpuConfig {
-            dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
-            dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
+            dp_meta,
             num_kangaroos,
             steps_per_call: solver.steps_per_call,
-            jump_table_size: 256,
+            jump_table_size: JUMP_TABLE_SIZE,
             cycle_cap,
         };
         solver.ctx.queue.write_buffer(
@@ -517,9 +551,6 @@ impl KangarooSolver {
     }
 
     /// Run one batch of GPU operations.
-    ///
-    /// Uses double-buffered DP slots: compute + copy to staging happen in a
-    /// single encoder, eliminating the conditional second round-trip.
     pub fn step_collect(&mut self) -> Result<(Vec<GpuDistinguishedPoint>, u64)> {
         let slot = self.current_slot;
 
@@ -541,9 +572,6 @@ impl KangarooSolver {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        // Copy dp_count AND full dp_buffer to staging in the same encoder.
-        // This eliminates the conditional second round-trip — we always copy
-        // both, and only parse dp_buffer on CPU if dp_count > 0.
         encoder.copy_buffer_to_buffer(
             self.buffers.dp_count_buffer(slot),
             0,
@@ -551,22 +579,34 @@ impl KangarooSolver {
             0,
             4,
         );
-        let dp_copy_size = (MAX_DISTINGUISHED_POINTS as u64)
-            * (std::mem::size_of::<GpuDistinguishedPoint>() as u64);
-        encoder.copy_buffer_to_buffer(
-            self.buffers.dp_buffer(slot),
-            0,
-            self.buffers.staging_buffer(slot),
-            4,
-            dp_copy_size,
-        );
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
         let ops_delta = (self.num_kangaroos as u64) * (self.steps_per_call as u64);
         self.total_ops += ops_delta;
 
-        let dps = self.read_slot_dps(slot)?;
+        let count = self.read_slot_dp_count(slot)?;
+        let dps = if count == 0 {
+            Vec::new()
+        } else {
+            let mut copy_encoder =
+                self.ctx
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Kangaroo DP Copy Encoder"),
+                    });
+            let dp_size = std::mem::size_of::<GpuDistinguishedPoint>() as u64;
+            let clamped = count.min(MAX_DISTINGUISHED_POINTS);
+            copy_encoder.copy_buffer_to_buffer(
+                self.buffers.dp_buffer(slot),
+                0,
+                self.buffers.staging_buffer(slot),
+                0,
+                (clamped as u64) * dp_size,
+            );
+            self.ctx.queue.submit(Some(copy_encoder.finish()));
+            self.read_slot_dps(slot, clamped)?
+        };
         self.reset_dp_count(slot)?;
 
         self.current_slot = 1 - slot;
@@ -574,9 +614,6 @@ impl KangarooSolver {
     }
 
     /// Run one batch of GPU operations.
-    ///
-    /// Uses double-buffered DP slots: compute + copy to staging happen in a
-    /// single encoder, eliminating the conditional second round-trip.
     pub fn step(&mut self) -> Result<Option<Vec<u8>>> {
         let (dps, ops_delta) = self.step_collect()?;
 
@@ -610,9 +647,38 @@ impl KangarooSolver {
         self.total_ops
     }
 
-    fn read_slot_dps(&self, slot: usize) -> Result<Vec<GpuDistinguishedPoint>> {
+    fn read_slot_dp_count(&self, slot: usize) -> Result<u32> {
+        let staging = self.buffers.staging_buffer(slot);
+        let slice = staging.slice(0..4);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+
+        self.ctx
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(GPU_POLL_TIMEOUT),
+            })
+            .map_err(|e| anyhow!("GPU poll timed out or failed reading DP count: {e:?}"))?;
+
+        let map_result = rx
+            .recv_timeout(GPU_POLL_TIMEOUT)
+            .map_err(|e| anyhow!("DP count map callback not received within timeout: {e}"))?;
+        map_result.map_err(|e| anyhow!("Failed to map DP count buffer: {e:?}"))?;
+
+        let data = slice.get_mapped_range();
+        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        drop(data);
+        staging.unmap();
+        Ok(count)
+    }
+
+    fn read_slot_dps(&self, slot: usize, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
         let dp_size = std::mem::size_of::<GpuDistinguishedPoint>();
-        let total_size = 4 + (MAX_DISTINGUISHED_POINTS as usize * dp_size);
+        let actual_count = (count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
+        let total_size = actual_count * dp_size;
 
         let staging = self.buffers.staging_buffer(slot);
         let slice = staging.slice(0..total_size as u64);
@@ -627,20 +693,15 @@ impl KangarooSolver {
                 submission_index: None,
                 timeout: Some(GPU_POLL_TIMEOUT),
             })
-            .map_err(|e| {
-                anyhow!("GPU poll timed out or failed reading DP staging buffer: {e:?}")
-            })?;
+            .map_err(|e| anyhow!("GPU poll timed out or failed reading DP payload: {e:?}"))?;
 
         let map_result = rx
             .recv_timeout(GPU_POLL_TIMEOUT)
-            .map_err(|e| anyhow!("DP staging map callback not received within timeout: {e}"))?;
-        map_result.map_err(|e| anyhow!("Failed to map DP staging buffer: {e:?}"))?;
+            .map_err(|e| anyhow!("DP payload map callback not received within timeout: {e}"))?;
+        map_result.map_err(|e| anyhow!("Failed to map DP payload buffer: {e:?}"))?;
 
         let data = slice.get_mapped_range();
-        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let actual_count = (count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
-        let dp_bytes = &data[4..];
-        let dps: Vec<GpuDistinguishedPoint> = dp_bytes
+        let dps: Vec<GpuDistinguishedPoint> = data
             .chunks_exact(dp_size)
             .take(actual_count)
             .map(|chunk| *bytemuck::from_bytes::<GpuDistinguishedPoint>(chunk))
@@ -663,7 +724,7 @@ impl KangarooSolver {
     fn calibrate(&mut self, dp_bits: u32, verbose: bool) -> Result<()> {
         let candidates = [16u32, 32, 64, 128, 256, 512];
         let mut best_steps = candidates[0];
-        let dp_mask = create_dp_mask(dp_bits);
+        let dp_meta = Self::dp_meta(dp_bits);
 
         if verbose {
             info!("Calibrating GPU performance...");
@@ -684,11 +745,10 @@ impl KangarooSolver {
 
             // Update config buffer with new steps_per_call
             let config = GpuConfig {
-                dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
-                dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
+                dp_meta,
                 num_kangaroos: self.num_kangaroos,
                 steps_per_call: steps,
-                jump_table_size: 256,
+                jump_table_size: JUMP_TABLE_SIZE,
                 cycle_cap: 512, // Default floor for calibration
             };
             self.ctx.queue.write_buffer(

@@ -27,6 +27,10 @@ pub struct GpuBuffers {
     jump_points_buffer: Buffer,
     #[allow(dead_code)]
     jump_distances_buffer: Buffer,
+    #[allow(dead_code)]
+    escape_points_buffer: Buffer,
+    #[allow(dead_code)]
+    escape_distances_buffer: Buffer,
     pub kangaroos_buffer: Buffer,
     slots: [DpSlot; NUM_SLOTS],
 }
@@ -39,6 +43,8 @@ impl GpuBuffers {
         config: &GpuConfig,
         jump_points: &[GpuAffinePoint],
         jump_distances: &[[u32; 8]],
+        escape_points: &[GpuAffinePoint],
+        escape_distances: &[[u32; 8]],
         num_kangaroos: u32,
         max_dps: u32,
     ) -> Result<Self> {
@@ -58,6 +64,15 @@ impl GpuBuffers {
             "Jump Distances Buffer",
             BufferUsages::STORAGE,
             jump_distances,
+        );
+
+        let escape_points_buffer =
+            ctx.create_buffer_init("Escape Points Buffer", BufferUsages::STORAGE, escape_points);
+
+        let escape_distances_buffer = ctx.create_buffer_init(
+            "Escape Distances Buffer",
+            BufferUsages::STORAGE,
+            escape_distances,
         );
 
         let kangaroos_buffer = ctx.create_buffer::<GpuKangaroo>(
@@ -113,14 +128,22 @@ impl GpuBuffers {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: kangaroos_buffer.as_entire_binding(),
+                        resource: escape_points_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: dp_buffer.as_entire_binding(),
+                        resource: escape_distances_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
+                        resource: kangaroos_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: dp_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
                         resource: dp_count_buffer.as_entire_binding(),
                     },
                 ],
@@ -140,6 +163,8 @@ impl GpuBuffers {
             config_buffer,
             jump_points_buffer,
             jump_distances_buffer,
+            escape_points_buffer,
+            escape_distances_buffer,
             kangaroos_buffer,
             slots,
         })
