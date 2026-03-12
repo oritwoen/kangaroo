@@ -313,6 +313,9 @@ impl KangarooSolver {
         // warmup
         Self::dispatch_once_raw(ctx, &pipeline, &buffers, num_kangaroos, variant.size())?;
 
+        ctx.queue
+            .write_buffer(buffers.dp_count_buffer(0), 0, &[0u8; 4]);
+
         let start = Instant::now();
         Self::dispatch_once_raw(ctx, &pipeline, &buffers, num_kangaroos, variant.size())?;
         let elapsed = start.elapsed().as_millis();
@@ -484,7 +487,7 @@ impl KangarooSolver {
         };
 
         // Auto-calibrate steps_per_call
-        solver.calibrate(dp_bits, verbose);
+        solver.calibrate(dp_bits, verbose)?;
 
         // Update config buffer with calibrated value and correct DP mask
         let cycle_cap = Self::cycle_cap_for(dp_bits);
@@ -649,9 +652,10 @@ impl KangarooSolver {
     }
 
     /// Calibrate steps_per_call by measuring actual GPU dispatch times
-    fn calibrate(&mut self, dp_bits: u32, verbose: bool) {
+    fn calibrate(&mut self, dp_bits: u32, verbose: bool) -> Result<()> {
         let candidates = [16u32, 32, 64, 128, 256, 512];
         let mut best_steps = candidates[0];
+        let dp_mask = create_dp_mask(dp_bits);
 
         if verbose {
             info!("Calibrating GPU performance...");
@@ -672,8 +676,8 @@ impl KangarooSolver {
 
             // Update config buffer with new steps_per_call
             let config = GpuConfig {
-                dp_mask_lo: [0; 4], // Not used in timing test
-                dp_mask_hi: [0; 4],
+                dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
+                dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
                 num_kangaroos: self.num_kangaroos,
                 steps_per_call: steps,
                 jump_table_size: 256,
@@ -685,12 +689,16 @@ impl KangarooSolver {
                 bytemuck::bytes_of(&config),
             );
 
+            let calibration_slot = 0;
+
             // Warm up dispatch
-            self.dispatch_once();
+            self.reset_dp_count(calibration_slot)?;
+            self.dispatch_once()?;
 
             // Timed dispatch
+            self.reset_dp_count(calibration_slot)?;
             let start = Instant::now();
-            self.dispatch_once();
+            self.dispatch_once()?;
             let elapsed_ms = start.elapsed().as_millis();
 
             if verbose {
@@ -711,10 +719,12 @@ impl KangarooSolver {
         if verbose {
             info!("Calibrated: steps_per_call={}", best_steps);
         }
+
+        Ok(())
     }
 
     /// Single GPU dispatch without readback (for calibration)
-    fn dispatch_once(&self) {
+    fn dispatch_once(&self) -> Result<()> {
         Self::dispatch_once_raw(
             &self.ctx,
             &self.pipeline,
@@ -722,7 +732,6 @@ impl KangarooSolver {
             self.num_kangaroos,
             self.workgroup_size,
         )
-        .unwrap();
     }
 
     fn dispatch_once_raw(
