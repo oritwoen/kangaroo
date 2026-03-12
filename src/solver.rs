@@ -27,8 +27,6 @@ const TARGET_DISPATCH_MS: u128 = 50;
 struct JumpTableRefs<'a> {
     jump_points: &'a [crate::gpu::GpuAffinePoint],
     jump_distances: &'a [[u32; 8]],
-    escape_points: &'a [crate::gpu::GpuAffinePoint],
-    escape_distances: &'a [[u32; 8]],
 }
 
 /// Shared resources for batch mode (pipeline created once, reused)
@@ -237,14 +235,11 @@ impl KangarooSolver {
         base_point: ProjectivePoint,
     ) -> Result<Self> {
         let jump_table_size = JUMP_TABLE_SIZE;
-        let (jump_points, jump_distances, escape_points, escape_distances) =
-            generate_jump_tables(range_bits, &base_point);
+        let (jump_points, jump_distances) = generate_jump_tables(range_bits, &base_point);
         ensure!(
             jump_points.len() == JUMP_TABLE_SIZE as usize
-                && jump_distances.len() == JUMP_TABLE_SIZE as usize
-                && escape_points.len() == JUMP_TABLE_SIZE as usize
-                && escape_distances.len() == JUMP_TABLE_SIZE as usize,
-            "jump/escape tables must have {} entries",
+                && jump_distances.len() == JUMP_TABLE_SIZE as usize,
+            "jump tables must have {} entries",
             JUMP_TABLE_SIZE
         );
 
@@ -277,8 +272,6 @@ impl KangarooSolver {
             JumpTableData {
                 jump_points: &jump_points,
                 jump_distances: &jump_distances,
-                escape_points: &escape_points,
-                escape_distances: &escape_distances,
             },
             num_kangaroos,
             max_dps,
@@ -335,8 +328,6 @@ impl KangarooSolver {
             JumpTableData {
                 jump_points: table_refs.jump_points,
                 jump_distances: table_refs.jump_distances,
-                escape_points: table_refs.escape_points,
-                escape_distances: table_refs.escape_distances,
             },
             num_kangaroos,
             MAX_DISTINGUISHED_POINTS,
@@ -420,14 +411,11 @@ impl KangarooSolver {
             info!("Generating jump table...");
         }
         let jump_table_size = JUMP_TABLE_SIZE;
-        let (jump_points, jump_distances, escape_points, escape_distances) =
-            generate_jump_tables(range_bits, &base_point);
+        let (jump_points, jump_distances) = generate_jump_tables(range_bits, &base_point);
         ensure!(
             jump_points.len() == JUMP_TABLE_SIZE as usize
-                && jump_distances.len() == JUMP_TABLE_SIZE as usize
-                && escape_points.len() == JUMP_TABLE_SIZE as usize
-                && escape_distances.len() == JUMP_TABLE_SIZE as usize,
-            "jump/escape tables must have {} entries",
+                && jump_distances.len() == JUMP_TABLE_SIZE as usize,
+            "jump tables must have {} entries",
             JUMP_TABLE_SIZE
         );
         if verbose {
@@ -479,8 +467,6 @@ impl KangarooSolver {
         let table_refs = JumpTableRefs {
             jump_points: &jump_points,
             jump_distances: &jump_distances,
-            escape_points: &escape_points,
-            escape_distances: &escape_distances,
         };
         let pipeline = Self::select_best_variant(
             &ctx,
@@ -507,8 +493,6 @@ impl KangarooSolver {
             JumpTableData {
                 jump_points: &jump_points,
                 jump_distances: &jump_distances,
-                escape_points: &escape_points,
-                escape_distances: &escape_distances,
             },
             num_kangaroos,
             max_dps,
@@ -657,29 +641,32 @@ impl KangarooSolver {
     fn read_slot_dp_count(&self, slot: usize) -> Result<u32> {
         let staging = self.buffers.staging_buffer(slot);
         let slice = staging.slice(0..4);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
+        let result = (|| -> Result<u32> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
 
-        self.ctx
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(GPU_POLL_TIMEOUT),
-            })
-            .map_err(|e| anyhow!("GPU poll timed out or failed reading DP count: {e:?}"))?;
+            self.ctx
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(GPU_POLL_TIMEOUT),
+                })
+                .map_err(|e| anyhow!("GPU poll timed out or failed reading DP count: {e:?}"))?;
 
-        let map_result = rx
-            .recv_timeout(GPU_POLL_TIMEOUT)
-            .map_err(|e| anyhow!("DP count map callback not received within timeout: {e}"))?;
-        map_result.map_err(|e| anyhow!("Failed to map DP count buffer: {e:?}"))?;
+            let map_result = rx
+                .recv_timeout(GPU_POLL_TIMEOUT)
+                .map_err(|e| anyhow!("DP count map callback not received within timeout: {e}"))?;
+            map_result.map_err(|e| anyhow!("Failed to map DP count buffer: {e:?}"))?;
 
-        let data = slice.get_mapped_range();
-        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        drop(data);
+            let data = slice.get_mapped_range();
+            let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            drop(data);
+            Ok(count)
+        })();
         staging.unmap();
-        Ok(count)
+        result
     }
 
     fn read_slot_dps(&self, slot: usize, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
@@ -689,35 +676,37 @@ impl KangarooSolver {
 
         let staging = self.buffers.staging_buffer(slot);
         let slice = staging.slice(0..total_size as u64);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
+        let result = (|| -> Result<Vec<GpuDistinguishedPoint>> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
 
-        self.ctx
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(GPU_POLL_TIMEOUT),
-            })
-            .map_err(|e| anyhow!("GPU poll timed out or failed reading DP payload: {e:?}"))?;
+            self.ctx
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(GPU_POLL_TIMEOUT),
+                })
+                .map_err(|e| anyhow!("GPU poll timed out or failed reading DP payload: {e:?}"))?;
 
-        let map_result = rx
-            .recv_timeout(GPU_POLL_TIMEOUT)
-            .map_err(|e| anyhow!("DP payload map callback not received within timeout: {e}"))?;
-        map_result.map_err(|e| anyhow!("Failed to map DP payload buffer: {e:?}"))?;
+            let map_result = rx
+                .recv_timeout(GPU_POLL_TIMEOUT)
+                .map_err(|e| anyhow!("DP payload map callback not received within timeout: {e}"))?;
+            map_result.map_err(|e| anyhow!("Failed to map DP payload buffer: {e:?}"))?;
 
-        let data = slice.get_mapped_range();
-        let dps: Vec<GpuDistinguishedPoint> = data
-            .chunks_exact(dp_size)
-            .take(actual_count)
-            .map(|chunk| *bytemuck::from_bytes::<GpuDistinguishedPoint>(chunk))
-            .collect();
+            let data = slice.get_mapped_range();
+            let dps: Vec<GpuDistinguishedPoint> = data
+                .chunks_exact(dp_size)
+                .take(actual_count)
+                .map(|chunk| *bytemuck::from_bytes::<GpuDistinguishedPoint>(chunk))
+                .collect();
 
-        drop(data);
+            drop(data);
+            Ok(dps)
+        })();
         staging.unmap();
-
-        Ok(dps)
+        result
     }
 
     fn reset_dp_count(&self, slot: usize) -> Result<()> {

@@ -46,11 +46,9 @@ struct DistinguishedPoint {
 @group(0) @binding(0) var<uniform> config: Config;
 @group(0) @binding(1) var<storage, read> jump_points: array<AffinePoint, 256>;
 @group(0) @binding(2) var<storage, read> jump_distances: array<array<u32, 8>, 256>;
-@group(0) @binding(3) var<storage, read> escape_points: array<AffinePoint, 256>;
-@group(0) @binding(4) var<storage, read> escape_distances: array<array<u32, 8>, 256>;
-@group(0) @binding(5) var<storage, read_write> kangaroos: array<Kangaroo>;
-@group(0) @binding(6) var<storage, read_write> dp_buffer: array<DistinguishedPoint>;
-@group(0) @binding(7) var<storage, read_write> dp_count: atomic<u32>;
+@group(0) @binding(3) var<storage, read_write> kangaroos: array<Kangaroo>;
+@group(0) @binding(4) var<storage, read_write> dp_buffer: array<DistinguishedPoint>;
+@group(0) @binding(5) var<storage, read_write> dp_count: atomic<u32>;
 
 // Shared memory for batch inversion (tree-based Montgomery's trick)
 // Product tree + saved right-child products for inverse propagation
@@ -198,17 +196,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
         var effective_jump_idx = jump_index_from_x(px);
-        var use_escape_jump = false;
         if (valid) {
             let in_cycle = (k.cycle_counter > config.cycle_cap)
                 || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
             if (in_cycle) {
                 effective_jump_idx = escape_index_from_state(px, kid, k.cycle_counter, step);
-                use_escape_jump = true;
                 k.cycle_counter = 0u;
                 k.repeat_count = 0u;
-            }
-            if (!use_escape_jump) {
+            } else {
                 if (effective_jump_idx == k.last_jump) {
                     effective_jump_idx = (effective_jump_idx + 1u) & 0xFFu;
                 }
@@ -216,15 +211,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
             }
         }
         let jump_idx = effective_jump_idx;
-        var jump_point: AffinePoint;
-        var jump_dist: array<u32, 8>;
-        if (use_escape_jump) {
-            jump_point = escape_points[jump_idx];
-            jump_dist = escape_distances[jump_idx];
-        } else {
-            jump_point = jump_points[jump_idx];
-            jump_dist = jump_distances[jump_idx];
-        }
+        let jump_point = jump_points[jump_idx];
+        let jump_dist = jump_distances[jump_idx];
         
         // =====================================================================
         // BATCH INVERSION (Montgomery's trick for dx = x_jump - x_point)

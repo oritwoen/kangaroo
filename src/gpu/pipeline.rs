@@ -85,29 +85,9 @@ impl KangarooPipeline {
                             },
                             count: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
                         // Kangaroos (storage, read_write)
                         wgpu::BindGroupLayoutEntry {
-                            binding: 5,
+                            binding: 3,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -118,7 +98,7 @@ impl KangarooPipeline {
                         },
                         // DP buffer (storage, read_write)
                         wgpu::BindGroupLayoutEntry {
-                            binding: 6,
+                            binding: 4,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -129,7 +109,7 @@ impl KangarooPipeline {
                         },
                         // DP count (storage, read_write atomic)
                         wgpu::BindGroupLayoutEntry {
-                            binding: 7,
+                            binding: 5,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },

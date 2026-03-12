@@ -13,44 +13,28 @@ use std::ops::Neg;
 
 pub type JumpPointTable = Vec<GpuAffinePoint>;
 pub type JumpDistanceTable = Vec<[u32; 8]>;
-pub type JumpTables = (
-    JumpPointTable,
-    JumpDistanceTable,
-    JumpPointTable,
-    JumpDistanceTable,
-);
+pub type JumpTables = (JumpPointTable, JumpDistanceTable);
 
 pub fn generate_jump_tables(range_bits: u32, base_point: &ProjectivePoint) -> JumpTables {
     const TABLE_SIZE: usize = 256;
 
     let mut jump_points = Vec::with_capacity(TABLE_SIZE);
     let mut jump_distances = Vec::with_capacity(TABLE_SIZE);
-    let mut escape_points = Vec::with_capacity(TABLE_SIZE);
-    let mut escape_distances = Vec::with_capacity(TABLE_SIZE);
 
     let jump_exp = range_bits / 2;
-    let escape_exp = (jump_exp + 8).min(range_bits.saturating_sub(1));
 
     for i in 0..TABLE_SIZE {
         let jump_scalar_bytes = make_step_scalar_bytes(i as u32, jump_exp, 0x811c9dc5u32);
-        let escape_scalar_bytes = make_step_scalar_bytes(i as u32, escape_exp, 0xA4C1F4D3u32);
 
         let jump_scalar = Scalar::reduce(K256U256::from_be_slice(&jump_scalar_bytes));
         let jump_point = (*base_point * jump_scalar).to_affine();
         jump_points.push(affine_to_gpu(&jump_point));
         jump_distances.push(scalar_be_to_limbs(&jump_scalar_bytes));
-
-        let escape_scalar = Scalar::reduce(K256U256::from_be_slice(&escape_scalar_bytes));
-        let escape_point = (*base_point * escape_scalar).to_affine();
-        escape_points.push(affine_to_gpu(&escape_point));
-        escape_distances.push(scalar_be_to_limbs(&escape_scalar_bytes));
     }
 
-    for i in 0..4u32 {
-        tracing::debug!("Jump/escape table[{}] generated", i);
-    }
+    tracing::debug!("Jump table generated: {} entries", TABLE_SIZE);
 
-    (jump_points, jump_distances, escape_points, escape_distances)
+    (jump_points, jump_distances)
 }
 
 fn make_step_scalar_bytes(index: u32, exp_bits: u32, salt: u32) -> [u8; 32] {
@@ -528,26 +512,9 @@ mod tests {
 
     #[test]
     fn test_generate_jump_tables_lengths() {
-        let (jump_points, jump_distances, escape_points, escape_distances) =
-            generate_jump_tables(40, &ProjectivePoint::GENERATOR);
+        let (jump_points, jump_distances) = generate_jump_tables(40, &ProjectivePoint::GENERATOR);
 
         assert_eq!(jump_points.len(), 256);
         assert_eq!(jump_distances.len(), 256);
-        assert_eq!(escape_points.len(), 256);
-        assert_eq!(escape_distances.len(), 256);
-    }
-
-    #[test]
-    fn test_generate_jump_tables_escape_differs() {
-        let (_, jump_distances, _, escape_distances) =
-            generate_jump_tables(48, &ProjectivePoint::GENERATOR);
-
-        let equal_count = jump_distances
-            .iter()
-            .zip(escape_distances.iter())
-            .filter(|(jump, escape)| jump == escape)
-            .count();
-
-        assert!(equal_count < 16);
     }
 }
