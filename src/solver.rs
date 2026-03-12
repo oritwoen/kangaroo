@@ -632,8 +632,8 @@ impl KangarooSolver {
             })?;
 
         let map_result = rx
-            .recv()
-            .map_err(|e| anyhow!("Failed to receive DP staging map result: {e}"))?;
+            .recv_timeout(GPU_POLL_TIMEOUT)
+            .map_err(|e| anyhow!("DP staging map callback not received within timeout: {e}"))?;
         map_result.map_err(|e| anyhow!("Failed to map DP staging buffer: {e:?}"))?;
 
         let data = slice.get_mapped_range();
@@ -701,12 +701,16 @@ impl KangarooSolver {
 
             // Warm up dispatch
             self.reset_dp_count(calibration_slot)?;
-            self.dispatch_once()?;
+            if self.dispatch_once().is_err() {
+                break; // GPU too slow for this candidate, keep last good value
+            }
 
             // Timed dispatch
             self.reset_dp_count(calibration_slot)?;
             let start = Instant::now();
-            self.dispatch_once()?;
+            if self.dispatch_once().is_err() {
+                break; // GPU too slow for this candidate, keep last good value
+            }
             let elapsed_ms = start.elapsed().as_millis();
 
             if verbose {
