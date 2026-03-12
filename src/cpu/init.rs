@@ -11,15 +11,16 @@ use k256::{ProjectivePoint, Scalar};
 use rayon::prelude::*;
 use std::ops::Neg;
 
-pub fn generate_jump_tables(
-    range_bits: u32,
-    base_point: &ProjectivePoint,
-) -> (
-    Vec<GpuAffinePoint>,
-    Vec<[u32; 8]>,
-    Vec<GpuAffinePoint>,
-    Vec<[u32; 8]>,
-) {
+pub type JumpPointTable = Vec<GpuAffinePoint>;
+pub type JumpDistanceTable = Vec<[u32; 8]>;
+pub type JumpTables = (
+    JumpPointTable,
+    JumpDistanceTable,
+    JumpPointTable,
+    JumpDistanceTable,
+);
+
+pub fn generate_jump_tables(range_bits: u32, base_point: &ProjectivePoint) -> JumpTables {
     const TABLE_SIZE: usize = 256;
 
     let mut jump_points = Vec::with_capacity(TABLE_SIZE);

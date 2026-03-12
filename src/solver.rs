@@ -6,8 +6,8 @@ use crate::cpu::init::{generate_jump_tables, initialize_kangaroos};
 use crate::cpu::DPTable;
 use crate::crypto::{Point, U256};
 use crate::gpu::{
-    GpuBuffers, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, KangarooPipeline,
-    WorkgroupVariant,
+    GpuBuffers, GpuConfig, GpuContext, GpuDistinguishedPoint, GpuKangaroo, JumpTableData,
+    KangarooPipeline, WorkgroupVariant,
 };
 use anyhow::{anyhow, ensure, Result};
 use k256::ProjectivePoint;
@@ -23,6 +23,13 @@ const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
 const JUMP_TABLE_SIZE: u32 = 256;
 /// Target dispatch time in milliseconds (stay under TDR threshold)
 const TARGET_DISPATCH_MS: u128 = 50;
+
+struct JumpTableRefs<'a> {
+    jump_points: &'a [crate::gpu::GpuAffinePoint],
+    jump_distances: &'a [[u32; 8]],
+    escape_points: &'a [crate::gpu::GpuAffinePoint],
+    escape_distances: &'a [[u32; 8]],
+}
 
 /// Shared resources for batch mode (pipeline created once, reused)
 #[allow(dead_code)]
@@ -267,10 +274,12 @@ impl KangarooSolver {
             ctx,
             pipeline,
             &config,
-            &jump_points,
-            &jump_distances,
-            &escape_points,
-            &escape_distances,
+            JumpTableData {
+                jump_points: &jump_points,
+                jump_distances: &jump_distances,
+                escape_points: &escape_points,
+                escape_distances: &escape_distances,
+            },
             num_kangaroos,
             max_dps,
         )?;
@@ -314,10 +323,7 @@ impl KangarooSolver {
         ctx: &GpuContext,
         variant: WorkgroupVariant,
         config: &GpuConfig,
-        jump_points: &[crate::gpu::GpuAffinePoint],
-        jump_distances: &[[u32; 8]],
-        escape_points: &[crate::gpu::GpuAffinePoint],
-        escape_distances: &[[u32; 8]],
+        table_refs: &JumpTableRefs<'_>,
         kangaroos: &[GpuKangaroo],
         num_kangaroos: u32,
     ) -> Result<(KangarooPipeline, u128)> {
@@ -326,10 +332,12 @@ impl KangarooSolver {
             ctx,
             &pipeline,
             config,
-            jump_points,
-            jump_distances,
-            escape_points,
-            escape_distances,
+            JumpTableData {
+                jump_points: table_refs.jump_points,
+                jump_distances: table_refs.jump_distances,
+                escape_points: table_refs.escape_points,
+                escape_distances: table_refs.escape_distances,
+            },
             num_kangaroos,
             MAX_DISTINGUISHED_POINTS,
         )?;
@@ -351,10 +359,7 @@ impl KangarooSolver {
     fn select_best_variant(
         ctx: &GpuContext,
         config: &GpuConfig,
-        jump_points: &[crate::gpu::GpuAffinePoint],
-        jump_distances: &[[u32; 8]],
-        escape_points: &[crate::gpu::GpuAffinePoint],
-        escape_distances: &[[u32; 8]],
+        table_refs: &JumpTableRefs<'_>,
         kangaroos: &[GpuKangaroo],
         num_kangaroos: u32,
         verbose: bool,
@@ -371,10 +376,7 @@ impl KangarooSolver {
                 ctx,
                 variant,
                 config,
-                jump_points,
-                jump_distances,
-                escape_points,
-                escape_distances,
+                table_refs,
                 kangaroos,
                 num_kangaroos,
             )?;
@@ -474,13 +476,16 @@ impl KangarooSolver {
         if verbose {
             info!("Probing kernel variants (64/128)...");
         }
+        let table_refs = JumpTableRefs {
+            jump_points: &jump_points,
+            jump_distances: &jump_distances,
+            escape_points: &escape_points,
+            escape_distances: &escape_distances,
+        };
         let pipeline = Self::select_best_variant(
             &ctx,
             &config,
-            &jump_points,
-            &jump_distances,
-            &escape_points,
-            &escape_distances,
+            &table_refs,
             &kangaroos,
             num_kangaroos,
             verbose,
@@ -499,10 +504,12 @@ impl KangarooSolver {
             &ctx,
             &pipeline,
             &config,
-            &jump_points,
-            &jump_distances,
-            &escape_points,
-            &escape_distances,
+            JumpTableData {
+                jump_points: &jump_points,
+                jump_distances: &jump_distances,
+                escape_points: &escape_points,
+                escape_distances: &escape_distances,
+            },
             num_kangaroos,
             max_dps,
         )?;

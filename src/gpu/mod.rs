@@ -4,7 +4,7 @@ mod buffers;
 mod pipeline;
 
 pub use crate::gpu_crypto::{GpuAffinePoint, GpuContext};
-pub use buffers::GpuBuffers;
+pub use buffers::{GpuBuffers, JumpTableData};
 pub use pipeline::{KangarooPipeline, WorkgroupVariant};
 
 use bytemuck::{Pod, Zeroable};
