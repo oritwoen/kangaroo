@@ -655,6 +655,7 @@ impl KangarooSolver {
     fn calibrate(&mut self, dp_bits: u32, verbose: bool) -> Result<()> {
         let candidates = [16u32, 32, 64, 128, 256, 512];
         let mut best_steps = candidates[0];
+        let dp_mask = create_dp_mask(dp_bits);
 
         if verbose {
             info!("Calibrating GPU performance...");
@@ -675,8 +676,8 @@ impl KangarooSolver {
 
             // Update config buffer with new steps_per_call
             let config = GpuConfig {
-                dp_mask_lo: [0; 4], // Not used in timing test
-                dp_mask_hi: [0; 4],
+                dp_mask_lo: [dp_mask[0], dp_mask[1], dp_mask[2], dp_mask[3]],
+                dp_mask_hi: [dp_mask[4], dp_mask[5], dp_mask[6], dp_mask[7]],
                 num_kangaroos: self.num_kangaroos,
                 steps_per_call: steps,
                 jump_table_size: 256,
@@ -691,6 +692,7 @@ impl KangarooSolver {
             let calibration_slot = 0;
 
             // Warm up dispatch
+            self.reset_dp_count(calibration_slot)?;
             self.dispatch_once()?;
 
             // Timed dispatch
