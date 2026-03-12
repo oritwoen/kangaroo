@@ -9,13 +9,37 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all-features --locked
+
+      - name: Run clippy
+        run: cargo clippy --all-features --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features --locked
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Publish to crates.io
         run: cargo publish --locked
