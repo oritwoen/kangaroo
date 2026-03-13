@@ -4,7 +4,7 @@ mod buffers;
 mod pipeline;
 
 pub use crate::gpu_crypto::{GpuAffinePoint, GpuContext};
-pub use buffers::GpuBuffers;
+pub use buffers::{GpuBuffers, JumpTableData};
 pub use pipeline::{KangarooPipeline, WorkgroupVariant};
 
 use bytemuck::{Pod, Zeroable};
@@ -12,8 +12,7 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GpuConfig {
-    pub dp_mask_lo: [u32; 4],
-    pub dp_mask_hi: [u32; 4],
+    pub dp_meta: [u32; 4],
     pub num_kangaroos: u32,
     pub steps_per_call: u32,
     pub jump_table_size: u32,

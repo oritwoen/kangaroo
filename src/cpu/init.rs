@@ -11,71 +11,59 @@ use k256::{ProjectivePoint, Scalar};
 use rayon::prelude::*;
 use std::ops::Neg;
 
-/// Generate jump table with precomputed points.
-///
-/// Uses FNV-1a pseudo-random generation (Strategy S2) for better distribution
-/// than simple powers of 2.
-pub fn generate_jump_table(
-    range_bits: u32,
-    base_point: &ProjectivePoint,
-) -> (Vec<GpuAffinePoint>, Vec<[u32; 8]>) {
+pub type JumpPointTable = Vec<GpuAffinePoint>;
+pub type JumpDistanceTable = Vec<[u32; 8]>;
+pub type JumpTables = (JumpPointTable, JumpDistanceTable);
+
+pub fn generate_jump_tables(range_bits: u32, base_point: &ProjectivePoint) -> JumpTables {
     const TABLE_SIZE: usize = 256;
 
-    let mut points = Vec::with_capacity(TABLE_SIZE);
-    let mut distances = Vec::with_capacity(TABLE_SIZE);
+    let mut jump_points = Vec::with_capacity(TABLE_SIZE);
+    let mut jump_distances = Vec::with_capacity(TABLE_SIZE);
 
-    // Target mean step size: sqrt(N) / 2
-    let mean_exp = range_bits / 2;
+    let jump_exp = range_bits / 2;
 
-    // Generate random scalars with magnitude around 2^mean_exp.
     for i in 0..TABLE_SIZE {
-        // FNV-1a like hash to generate deterministic random steps
-        let mut h = 0x811c9dc5u32;
-        h = (h ^ (i as u32)).wrapping_mul(0x01000193);
+        let jump_scalar_bytes = make_step_scalar_bytes(i as u32, jump_exp, 0x811c9dc5u32);
 
-        // Strategy: fill bytes up to mean_exp / 8
-        // We need ceil(mean_exp / 8) bytes to cover mean_exp bits
-        let num_bytes = mean_exp.div_ceil(8);
-        let limit_byte = (num_bytes as usize).min(32);
-        let mut scalar_bytes = [0u8; 32];
-
-        // Use the hash to fill bytes
-        #[allow(clippy::needless_range_loop)]
-        for b in (32 - limit_byte)..32 {
-            h = (h ^ (b as u32)).wrapping_mul(0x01000193);
-            scalar_bytes[b] = (h & 0xFF) as u8;
-        }
-
-        // Mask the top byte to ensure we don't exceed our target range
-        let rem = mean_exp % 8;
-        if rem != 0 {
-            let mask = (1u8 << rem) - 1;
-            if 32 - limit_byte < 32 {
-                scalar_bytes[32 - limit_byte] &= mask;
-            }
-        }
-
-        // Ensure at least 1
-        if scalar_bytes.iter().all(|&x| x == 0) {
-            scalar_bytes[31] = 1;
-        }
-
-        // Compute point = scalar * G
-        let scalar_uint = K256U256::from_be_slice(&scalar_bytes);
-        let scalar = Scalar::reduce(scalar_uint);
-        let point = *base_point * scalar;
-        let affine = point.to_affine();
-
-        points.push(affine_to_gpu(&affine));
-        distances.push(scalar_be_to_limbs(&scalar_bytes));
+        let jump_scalar = Scalar::reduce(K256U256::from_be_slice(&jump_scalar_bytes));
+        let jump_point = (*base_point * jump_scalar).to_affine();
+        jump_points.push(affine_to_gpu(&jump_point));
+        jump_distances.push(scalar_be_to_limbs(&jump_scalar_bytes));
     }
 
-    // Debug logging for first few
-    for i in 0..4u32 {
-        tracing::debug!("Jump table[{}] generated", i);
+    tracing::debug!("Jump table generated: {} entries", TABLE_SIZE);
+
+    (jump_points, jump_distances)
+}
+
+fn make_step_scalar_bytes(index: u32, exp_bits: u32, salt: u32) -> [u8; 32] {
+    let mut h = salt;
+    h = (h ^ index).wrapping_mul(0x01000193);
+
+    let num_bytes = exp_bits.div_ceil(8);
+    let limit_byte = (num_bytes as usize).min(32);
+    let mut scalar_bytes = [0u8; 32];
+
+    #[allow(clippy::needless_range_loop)]
+    for b in (32 - limit_byte)..32 {
+        h = (h ^ (b as u32)).wrapping_mul(0x01000193);
+        scalar_bytes[b] = (h & 0xFF) as u8;
     }
 
-    (points, distances)
+    let rem = exp_bits % 8;
+    if rem != 0 {
+        let mask = (1u8 << rem) - 1;
+        if 32 - limit_byte < 32 {
+            scalar_bytes[32 - limit_byte] &= mask;
+        }
+    }
+
+    if scalar_bytes.iter().all(|&x| x == 0) {
+        scalar_bytes[31] = 1;
+    }
+
+    scalar_bytes
 }
 
 /// Initialize kangaroo positions.
@@ -520,5 +508,13 @@ mod tests {
         let be2 = u256_to_be_bytes(&large);
         let recovered2 = K256U256::from_be_slice(&be2);
         assert_eq!(large, recovered2);
+    }
+
+    #[test]
+    fn test_generate_jump_tables_lengths() {
+        let (jump_points, jump_distances) = generate_jump_tables(40, &ProjectivePoint::GENERATOR);
+
+        assert_eq!(jump_points.len(), 256);
+        assert_eq!(jump_distances.len(), 256);
     }
 }

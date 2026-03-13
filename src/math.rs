@@ -52,6 +52,7 @@ pub fn negate_256_be(bytes: &[u8; 32]) -> [u8; 32] {
 
 /// Create DP mask with `dp_bits` trailing zeros required.
 /// Returns mask in little-endian [u32; 8] format.
+#[allow(dead_code)]
 pub fn create_dp_mask(dp_bits: u32) -> [u32; 8] {
     let mut mask = [0u32; 8];
 

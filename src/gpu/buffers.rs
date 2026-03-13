@@ -9,6 +9,11 @@ use super::{
 use anyhow::Result;
 use wgpu::{BindGroup, Buffer, BufferUsages};
 
+pub struct JumpTableData<'a> {
+    pub jump_points: &'a [GpuAffinePoint],
+    pub jump_distances: &'a [[u32; 8]],
+}
+
 /// Number of DP buffer slots for double buffering
 const NUM_SLOTS: usize = 2;
 
@@ -37,8 +42,7 @@ impl GpuBuffers {
         ctx: &GpuContext,
         pipeline: &KangarooPipeline,
         config: &GpuConfig,
-        jump_points: &[GpuAffinePoint],
-        jump_distances: &[[u32; 8]],
+        table_data: JumpTableData<'_>,
         num_kangaroos: u32,
         max_dps: u32,
     ) -> Result<Self> {
@@ -50,14 +54,17 @@ impl GpuBuffers {
         );
 
         // Jump points buffer (storage)
-        let jump_points_buffer =
-            ctx.create_buffer_init("Jump Points Buffer", BufferUsages::STORAGE, jump_points);
+        let jump_points_buffer = ctx.create_buffer_init(
+            "Jump Points Buffer",
+            BufferUsages::STORAGE,
+            table_data.jump_points,
+        );
 
         // Jump distances buffer (storage)
         let jump_distances_buffer = ctx.create_buffer_init(
             "Jump Distances Buffer",
             BufferUsages::STORAGE,
-            jump_distances,
+            table_data.jump_distances,
         );
 
         let kangaroos_buffer = ctx.create_buffer::<GpuKangaroo>(

@@ -9,8 +9,7 @@
 // -----------------------------------------------------------------------------
 
 struct Config {
-    dp_mask_lo: vec4<u32>,
-    dp_mask_hi: vec4<u32>,
+    dp_meta: vec4<u32>,
     num_kangaroos: u32,
     steps_per_call: u32,
     jump_table_size: u32,
@@ -115,14 +114,39 @@ fn affine_add_with_inv(
 }
 
 fn is_distinguished(px: array<u32, 8>) -> bool {
-    return ((px[0] & config.dp_mask_lo.x) == 0u)
-        && ((px[1] & config.dp_mask_lo.y) == 0u)
-        && ((px[2] & config.dp_mask_lo.z) == 0u)
-        && ((px[3] & config.dp_mask_lo.w) == 0u)
-        && ((px[4] & config.dp_mask_hi.x) == 0u)
-        && ((px[5] & config.dp_mask_hi.y) == 0u)
-        && ((px[6] & config.dp_mask_hi.z) == 0u)
-        && ((px[7] & config.dp_mask_hi.w) == 0u);
+    let full_limbs = min(config.dp_meta.x, 8u);
+    var limb = 0u;
+    loop {
+        if (limb >= full_limbs) {
+            break;
+        }
+        if (px[limb] != 0u) {
+            return false;
+        }
+        limb = limb + 1u;
+    }
+
+    let partial_mask = config.dp_meta.y;
+    if (partial_mask == 0u || full_limbs >= 8u) {
+        return true;
+    }
+
+    return (px[full_limbs] & partial_mask) == 0u;
+}
+
+fn jump_index_from_x(px: array<u32, 8>) -> u32 {
+    let mixed = (px[0] ^ (px[3] >> 11u) ^ (px[5] << 7u)) * 0x9e3779b9u;
+    return (mixed >> 24u) & 0xFFu;
+}
+
+fn escape_index_from_state(px: array<u32, 8>, kid: u32, cycle_counter: u32, step: u32) -> u32 {
+    let seed = px[0]
+        ^ px[2]
+        ^ (kid * 0x85ebca6bu)
+        ^ (cycle_counter * 0xc2b2ae35u)
+        ^ step;
+    let mixed = seed * 0x27d4eb2du;
+    return (mixed >> 24u) & 0xFFu;
 }
 
 // -----------------------------------------------------------------------------
@@ -171,20 +195,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
     // Perform jumps
     for (var step = 0u; step < config.steps_per_call; step++) {
-        // Select jump based on x coordinate (with cycle escape perturbation)
-        var effective_jump_idx = px[0] & 0xFFu;
+        var effective_jump_idx = jump_index_from_x(px);
         if (valid) {
             let in_cycle = (k.cycle_counter > config.cycle_cap)
                 || ((k.repeat_count & 0xFFFFu) > REPEAT_THRESHOLD);
             if (in_cycle) {
-                effective_jump_idx = (kid + (step * 31u) + k.cycle_counter) & 0xFFu;
+                effective_jump_idx = escape_index_from_state(px, kid, k.cycle_counter, step);
                 k.cycle_counter = 0u;
                 k.repeat_count = 0u;
+            } else {
+                if (effective_jump_idx == k.last_jump) {
+                    effective_jump_idx = (effective_jump_idx + 1u) & 0xFFu;
+                }
+                k.last_jump = effective_jump_idx;
             }
-            if (effective_jump_idx == k.last_jump) {
-                effective_jump_idx = (effective_jump_idx + 1u) & 0xFFu;
-            }
-            k.last_jump = effective_jump_idx;
         }
         let jump_idx = effective_jump_idx;
         let jump_point = jump_points[jump_idx];
