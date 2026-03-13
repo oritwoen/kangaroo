@@ -67,14 +67,6 @@ pub fn affine_to_gpu(point: &AffinePoint) -> GpuAffinePoint {
     }
 }
 
-/// Convert U256 (little-endian [u8; 32]) to u128 (lower 128 bits).
-#[allow(dead_code)]
-pub fn u256_to_u128(val: &[u8; 32]) -> u128 {
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&val[0..16]);
-    u128::from_le_bytes(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,14 +104,5 @@ mod tests {
 
         // Should be in limbs[0] as least significant
         assert_eq!(limbs[0] & 0xFF, 0x42);
-    }
-
-    #[test]
-    fn test_u256_to_u128() {
-        let mut val = [0u8; 32];
-        val[0] = 0x42; // LE: least significant byte first
-
-        let result = u256_to_u128(&val);
-        assert_eq!(result, 0x42);
     }
 }
