@@ -5,7 +5,7 @@
 use super::dp_table::compute_candidate_scalars;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::point::AffineCoordinates;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+
 use k256::U256 as K256U256;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::collections::HashMap;
@@ -287,8 +287,7 @@ impl CpuKangarooSolver {
 }
 
 fn get_x_low_from_affine(affine: &AffinePoint) -> u128 {
-    let encoded = affine.to_encoded_point(false);
-    let x_bytes = encoded.x().unwrap();
+    let x_bytes = affine.x();
     let mut low = [0u8; 16];
     low.copy_from_slice(&x_bytes[16..32]);
     u128::from_be_bytes(low)
