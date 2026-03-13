@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use bitcoin::hashes::{hash160, Hash};
-use bitcoin::{Address, CompressedPublicKey, Network, PubkeyHash};
+use bitcoin::{Address, Network, PubkeyHash};
 use k256::elliptic_curve::ops::MulByGenerator;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::elliptic_curve::PrimeField;
@@ -54,12 +54,6 @@ pub fn parse_hex_u256(hex_str: &str) -> Result<U256> {
     Ok(result)
 }
 
-/// Convert U256 (little-endian [u8; 32]) back to little-endian bytes
-#[allow(dead_code)]
-pub fn u256_to_le_bytes(val: &U256) -> [u8; 32] {
-    *val
-}
-
 /// Verify that private key produces the public key with arbitrary base point
 pub fn verify_key_with_base(private_key: &[u8], public_key: &Point, base_point: &Point) -> bool {
     if private_key.is_empty() || private_key.len() > 32 {
@@ -86,7 +80,6 @@ pub fn verify_key(private_key: &[u8], public_key: &Point) -> bool {
 }
 
 /// Compute compressed public key from private key bytes
-#[allow(dead_code)]
 pub fn privkey_to_pubkey(private_key: &[u8]) -> Result<Vec<u8>> {
     if private_key.is_empty() || private_key.len() > 32 {
         anyhow::bail!("Invalid private key length");
@@ -108,7 +101,6 @@ pub fn privkey_to_pubkey(private_key: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Compute Hash160 (RIPEMD160(SHA256(data)))
-#[allow(dead_code)]
 pub fn compute_hash160(data: &[u8]) -> [u8; 20] {
     let hash = hash160::Hash::hash(data);
     let mut result = [0u8; 20];
@@ -116,23 +108,13 @@ pub fn compute_hash160(data: &[u8]) -> [u8; 20] {
     result
 }
 
-/// Compute Bitcoin address from compressed public key
-#[allow(dead_code)]
-pub fn pubkey_to_address(pubkey: &[u8]) -> String {
-    let compressed =
-        CompressedPublicKey::from_slice(pubkey).expect("Invalid compressed public key");
-    Address::p2pkh(compressed, Network::Bitcoin).to_string()
-}
-
 /// Compute Bitcoin address from Hash160
-#[allow(dead_code)]
 pub fn pubkey_hash_to_address(hash: &[u8; 20]) -> String {
     let pubkey_hash = PubkeyHash::from_slice(hash).expect("Invalid hash160");
     Address::p2pkh(pubkey_hash, Network::Bitcoin).to_string()
 }
 
 /// Full verification: private key -> pubkey -> hash160 -> address
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct FullVerification {
     pub pubkey_hex: String,
@@ -144,7 +126,6 @@ pub struct FullVerification {
 }
 
 /// Verify private key produces expected pubkey, hash160, and address
-#[allow(dead_code)]
 pub fn full_verify(
     private_key: &[u8],
     expected_pubkey: &str,
@@ -170,17 +151,6 @@ pub fn full_verify(
         hash160_match: hash160_hex == expected_hash160,
         address_match: address == expected_address,
     })
-}
-
-/// Convert U256 to [u32; 8] for GPU
-#[allow(dead_code)]
-pub fn u256_to_u32_array(val: &U256) -> [u32; 8] {
-    let mut result = [0u32; 8];
-    for i in 0..8 {
-        result[i] =
-            u32::from_le_bytes([val[i * 4], val[i * 4 + 1], val[i * 4 + 2], val[i * 4 + 3]]);
-    }
-    result
 }
 
 #[cfg(test)]
