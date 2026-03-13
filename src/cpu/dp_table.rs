@@ -22,10 +22,10 @@ pub(crate) fn scalar_half() -> Scalar {
 }
 
 /// Stored DP with full affine X for proper verification
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct StoredDP {
     affine_x: [u8; 32],
-    dist: Vec<u8>,
+    dist: [u8; 32],
     ktype: u32,
 }
 
@@ -163,7 +163,7 @@ impl DPTable {
             }
             existing_list.push(StoredDP {
                 affine_x,
-                dist: dist_bytes.to_vec(),
+                dist: dist_bytes,
                 ktype: dp.ktype,
             });
             self.total_dps += 1;
@@ -177,7 +177,7 @@ impl DPTable {
                 hash_key,
                 vec![StoredDP {
                     affine_x,
-                    dist: dist_bytes.to_vec(),
+                    dist: dist_bytes,
                     ktype: dp.ktype,
                 }],
             );
