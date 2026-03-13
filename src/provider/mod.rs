@@ -30,23 +30,6 @@ pub struct ProviderResult {
     pub range_bits: Option<u32>,
 }
 
-/// Check if input looks like a provider reference
-///
-/// Returns false for Windows paths like "C:\path"
-#[allow(dead_code)]
-pub fn is_provider(input: &str) -> bool {
-    let Some((provider, _)) = input.split_once(':') else {
-        return false;
-    };
-
-    // Single char before colon = likely Windows drive path
-    if provider.len() == 1 {
-        return false;
-    }
-
-    supported_providers().contains(&provider)
-}
-
 /// Resolve a provider reference to puzzle data
 ///
 /// Format: `provider:path`
@@ -108,32 +91,6 @@ pub fn supported_providers() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[cfg(feature = "boha")]
-    fn test_is_provider_valid() {
-        assert!(is_provider("boha:b1000/135"));
-        assert!(is_provider("boha:b1000/66"));
-    }
-
-    #[test]
-    fn test_is_provider_windows_path() {
-        // Windows paths should not be detected as providers
-        assert!(!is_provider("C:\\Users\\test"));
-        assert!(!is_provider("D:\\path\\to\\file"));
-    }
-
-    #[test]
-    fn test_is_provider_no_colon() {
-        assert!(!is_provider("just-a-string"));
-        assert!(!is_provider("pubkey_hex_here"));
-    }
-
-    #[test]
-    fn test_is_provider_unknown() {
-        assert!(!is_provider("unknown:something"));
-        assert!(!is_provider("foo:bar/baz"));
-    }
 
     #[test]
     fn test_resolve_not_provider() {
