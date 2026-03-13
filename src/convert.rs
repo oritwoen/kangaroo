@@ -105,5 +105,4 @@ mod tests {
         // Should be in limbs[0] as least significant
         assert_eq!(limbs[0] & 0xFF, 0x42);
     }
-
 }
