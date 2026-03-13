@@ -29,27 +29,6 @@ struct JumpTableRefs<'a> {
     jump_distances: &'a [[u32; 8]],
 }
 
-/// Shared resources for batch mode (pipeline created once, reused)
-#[allow(dead_code)]
-pub struct SharedResources {
-    pub ctx: GpuContext,
-    pub pipeline: KangarooPipeline,
-}
-
-#[allow(dead_code)]
-impl SharedResources {
-    /// Create shared resources for batch mode
-    pub fn new(ctx: GpuContext) -> Result<Self> {
-        let variant = if ctx.max_workgroup_size() >= 128 {
-            WorkgroupVariant::Wg128
-        } else {
-            WorkgroupVariant::Wg64
-        };
-        let pipeline = KangarooPipeline::new(&ctx, variant)?;
-        Ok(Self { ctx, pipeline })
-    }
-}
-
 /// Main Kangaroo solver
 pub struct KangarooSolver {
     ctx: GpuContext,
@@ -58,7 +37,6 @@ pub struct KangarooSolver {
     dp_table: Option<DPTable>,
     total_ops: u64,
     num_kangaroos: u32,
-    #[allow(dead_code)]
     steps_per_call: u32,
     workgroup_size: u32,
     current_slot: usize,
@@ -97,52 +75,6 @@ impl KangarooSolver {
             true,
             ProjectivePoint::GENERATOR,
             0,
-        )
-    }
-
-    #[allow(dead_code)]
-    pub fn new_with_context(
-        ctx: &GpuContext,
-        pubkey: Point,
-        start: U256,
-        range_bits: u32,
-        dp_bits: u32,
-        num_kangaroos: u32,
-    ) -> Result<Self> {
-        Self::new_internal(
-            ctx.clone(),
-            pubkey,
-            start,
-            range_bits,
-            dp_bits,
-            num_kangaroos,
-            num_kangaroos,
-            false,
-            true,
-            ProjectivePoint::GENERATOR,
-            0,
-        )
-    }
-
-    #[allow(dead_code)]
-    /// Create a solver with shared resources (pipeline reuse - fastest for batch mode)
-    pub fn new_with_shared(
-        shared: &SharedResources,
-        pubkey: Point,
-        start: U256,
-        range_bits: u32,
-        dp_bits: u32,
-        num_kangaroos: u32,
-    ) -> Result<Self> {
-        Self::new_with_pipeline(
-            &shared.ctx,
-            &shared.pipeline,
-            pubkey,
-            start,
-            range_bits,
-            dp_bits,
-            num_kangaroos,
-            ProjectivePoint::GENERATOR,
         )
     }
 
@@ -220,96 +152,6 @@ impl KangarooSolver {
         let allowed_steps = (budgeted_dps.saturating_mul(dp_spacing) / num_k).max(1);
         let capped_steps = allowed_steps.min(u128::from(u32::MAX)) as u32;
         capped_steps.min(optimal_steps)
-    }
-
-    #[allow(dead_code, clippy::too_many_arguments)]
-    /// Create a solver with existing pipeline (no pipeline creation overhead)
-    fn new_with_pipeline(
-        ctx: &GpuContext,
-        pipeline: &KangarooPipeline,
-        pubkey: Point,
-        start: U256,
-        range_bits: u32,
-        dp_bits: u32,
-        num_kangaroos: u32,
-        base_point: ProjectivePoint,
-    ) -> Result<Self> {
-        let jump_table_size = JUMP_TABLE_SIZE;
-        let (jump_points, jump_distances) = generate_jump_tables(range_bits, &base_point);
-        ensure!(
-            jump_points.len() == JUMP_TABLE_SIZE as usize
-                && jump_distances.len() == JUMP_TABLE_SIZE as usize,
-            "jump tables must have {} entries",
-            JUMP_TABLE_SIZE
-        );
-
-        let dp_meta = Self::dp_meta(dp_bits);
-
-        // Config
-        // Use optimal steps per call from context (calibrated for 2s limit)
-        let steps_per_call = Self::select_steps_per_call(
-            ctx.optimal_steps_per_call(),
-            num_kangaroos,
-            dp_bits,
-            MAX_DISTINGUISHED_POINTS,
-        );
-
-        let cycle_cap = Self::cycle_cap_for(dp_bits);
-        let config = GpuConfig {
-            dp_meta,
-            num_kangaroos,
-            steps_per_call,
-            jump_table_size,
-            cycle_cap,
-        };
-
-        // Create buffers (reusing bind_group_layout from shared pipeline)
-        let max_dps = MAX_DISTINGUISHED_POINTS;
-        let buffers = GpuBuffers::new(
-            ctx,
-            pipeline,
-            &config,
-            JumpTableData {
-                jump_points: &jump_points,
-                jump_distances: &jump_distances,
-            },
-            num_kangaroos,
-            max_dps,
-        )?;
-
-        // Initialize kangaroos
-        let kangaroos = initialize_kangaroos(
-            &pubkey,
-            &start,
-            range_bits,
-            num_kangaroos,
-            &base_point,
-            0,
-            num_kangaroos,
-        )?;
-        upload_kangaroos(ctx, &buffers, &kangaroos)?;
-
-        // Use start for key computation: k = start + tame_dist - wild_dist
-        // Pass full 256-bit start to DPTable
-
-        // Clone pipeline (wgpu types are Arc-wrapped, so this is cheap)
-        let pipeline_clone = KangarooPipeline {
-            pipeline: pipeline.pipeline.clone(),
-            bind_group_layout: pipeline.bind_group_layout.clone(),
-            variant: pipeline.variant,
-        };
-
-        Ok(Self {
-            ctx: ctx.clone(),
-            pipeline: pipeline_clone,
-            buffers,
-            dp_table: Some(DPTable::new(start, pubkey, base_point)),
-            total_ops: 0,
-            num_kangaroos,
-            steps_per_call,
-            workgroup_size: pipeline.variant.size(),
-            current_slot: 0,
-        })
     }
 
     fn benchmark_variant(
