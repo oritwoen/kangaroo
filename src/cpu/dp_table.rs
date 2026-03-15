@@ -188,16 +188,6 @@ impl DPTable {
         None
     }
 
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.table.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.table.is_empty()
-    }
-
     pub fn total_dps(&self) -> usize {
         self.total_dps
     }
