@@ -1245,24 +1245,32 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let tx = tx.clone();
         let stop_flag = Arc::clone(&stop_flag);
         let total_ops = Arc::clone(&total_ops);
-        let handle = thread::spawn(move || loop {
-            if stop_flag.load(Ordering::Relaxed) {
-                break;
-            }
+        let handle = thread::spawn(move || {
+            loop {
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
 
-            match solver.step_collect() {
-                Ok((dps, ops_delta)) => {
-                    total_ops.fetch_add(ops_delta, Ordering::Relaxed);
-                    if dps.is_empty() {
-                        continue;
+                match solver.step_collect() {
+                    Ok((dps, ops_delta)) => {
+                        total_ops.fetch_add(ops_delta, Ordering::Relaxed);
+                        if dps.is_empty() {
+                            continue;
+                        }
+                        if tx.send(dps).is_err() {
+                            break;
+                        }
                     }
-                    if tx.send(dps).is_err() {
+                    Err(e) => {
+                        tracing::warn!("GPU worker {} stopped: {}", gpu_index, e);
                         break;
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("GPU worker {} stopped: {}", gpu_index, e);
-                    break;
+            }
+            // Drain the last pipelined batch
+            if let Ok(dps) = solver.flush_pending() {
+                if !dps.is_empty() {
+                    let _ = tx.send(dps);
                 }
             }
         });

@@ -396,7 +396,10 @@ impl KangarooSolver {
         let write_slot = self.current_slot;
         let read_slot = 1 - write_slot;
 
-        // Queue new compute work on write_slot
+        // Queue new compute work on write_slot.
+        // Safe despite shared kangaroos_buffer: wgpu executes submissions
+        // in order within a single queue, so the previous dispatch finishes
+        // writing kangaroo positions before this dispatch reads them.
         let mut encoder = self
             .ctx
             .device
