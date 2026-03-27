@@ -40,6 +40,7 @@ pub struct KangarooSolver {
     steps_per_call: u32,
     workgroup_size: u32,
     current_slot: usize,
+    prev_submission: Option<wgpu::SubmissionIndex>,
 }
 
 impl KangarooSolver {
@@ -357,6 +358,7 @@ impl KangarooSolver {
             steps_per_call,
             workgroup_size,
             current_slot: 0,
+            prev_submission: None,
         };
 
         // Auto-calibrate steps_per_call
@@ -384,9 +386,20 @@ impl KangarooSolver {
     }
 
     /// Run one batch of GPU operations.
+    ///
+    /// Pipelines dispatch and readback across double-buffered slots:
+    /// dispatches new work on the current slot while reading back results
+    /// from the previous slot. The first call returns no DPs (nothing
+    /// pending yet); steady-state calls overlap GPU compute with CPU
+    /// readback.
     pub fn step_collect(&mut self) -> Result<(Vec<GpuDistinguishedPoint>, u64)> {
-        let slot = self.current_slot;
+        let write_slot = self.current_slot;
+        let read_slot = 1 - write_slot;
 
+        // Queue new compute work on write_slot.
+        // Safe despite shared kangaroos_buffer: wgpu executes submissions
+        // in order within a single queue, so the previous dispatch finishes
+        // writing kangaroo positions before this dispatch reads them.
         let mut encoder = self
             .ctx
             .device
@@ -400,25 +413,43 @@ impl KangarooSolver {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline.pipeline);
-            pass.set_bind_group(0, self.buffers.bind_group(slot), &[]);
+            pass.set_bind_group(0, self.buffers.bind_group(write_slot), &[]);
             let workgroups = self.num_kangaroos.div_ceil(self.workgroup_size);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
         encoder.copy_buffer_to_buffer(
-            self.buffers.dp_count_buffer(slot),
+            self.buffers.dp_count_buffer(write_slot),
             0,
-            self.buffers.staging_buffer(slot),
+            self.buffers.staging_buffer(write_slot),
             0,
             4,
         );
 
-        self.ctx.queue.submit(Some(encoder.finish()));
+        let new_sub = self.ctx.queue.submit(Some(encoder.finish()));
 
         let ops_delta = (self.num_kangaroos as u64) * (self.steps_per_call as u64);
         self.total_ops += ops_delta;
 
-        let count = self.read_slot_dp_count(slot)?;
+        // Read back from the previous slot while the GPU works on write_slot
+        let dps = if let Some(prev_sub) = self.prev_submission.take() {
+            self.read_pending(read_slot, prev_sub)?
+        } else {
+            Vec::new()
+        };
+
+        self.prev_submission = Some(new_sub);
+        self.current_slot = 1 - write_slot;
+        Ok((dps, ops_delta))
+    }
+
+    /// Read back DPs from a completed slot and reset its counter.
+    fn read_pending(
+        &self,
+        slot: usize,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<Vec<GpuDistinguishedPoint>> {
+        let count = self.read_slot_dp_count(slot, submission)?;
         let dps = if count == 0 {
             Vec::new()
         } else {
@@ -437,13 +468,22 @@ impl KangarooSolver {
                 0,
                 (clamped as u64) * dp_size,
             );
-            self.ctx.queue.submit(Some(copy_encoder.finish()));
-            self.read_slot_dps(slot, clamped)?
+            let copy_sub = self.ctx.queue.submit(Some(copy_encoder.finish()));
+            self.read_slot_dps(slot, clamped, copy_sub)?
         };
         self.reset_dp_count(slot)?;
+        Ok(dps)
+    }
 
-        self.current_slot = 1 - slot;
-        Ok((dps, ops_delta))
+    /// Drain the pipeline: read back DPs from the last dispatched batch.
+    ///
+    /// Call after the solve loop exits to collect any remaining results.
+    pub fn flush_pending(&mut self) -> Result<Vec<GpuDistinguishedPoint>> {
+        let Some(prev_sub) = self.prev_submission.take() else {
+            return Ok(Vec::new());
+        };
+        let pending_slot = 1 - self.current_slot;
+        self.read_pending(pending_slot, prev_sub)
     }
 
     /// Run one batch of GPU operations.
@@ -480,7 +520,7 @@ impl KangarooSolver {
         self.total_ops
     }
 
-    fn read_slot_dp_count(&self, slot: usize) -> Result<u32> {
+    fn read_slot_dp_count(&self, slot: usize, submission: wgpu::SubmissionIndex) -> Result<u32> {
         let staging = self.buffers.staging_buffer(slot);
         let slice = staging.slice(0..4);
         let result = (|| -> Result<u32> {
@@ -492,7 +532,7 @@ impl KangarooSolver {
             self.ctx
                 .device
                 .poll(wgpu::PollType::Wait {
-                    submission_index: None,
+                    submission_index: Some(submission),
                     timeout: Some(GPU_POLL_TIMEOUT),
                 })
                 .map_err(|e| anyhow!("GPU poll timed out or failed reading DP count: {e:?}"))?;
@@ -511,7 +551,12 @@ impl KangarooSolver {
         result
     }
 
-    fn read_slot_dps(&self, slot: usize, count: u32) -> Result<Vec<GpuDistinguishedPoint>> {
+    fn read_slot_dps(
+        &self,
+        slot: usize,
+        count: u32,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<Vec<GpuDistinguishedPoint>> {
         let dp_size = std::mem::size_of::<GpuDistinguishedPoint>();
         let actual_count = (count as usize).min(MAX_DISTINGUISHED_POINTS as usize);
         let total_size = actual_count * dp_size;
@@ -527,7 +572,7 @@ impl KangarooSolver {
             self.ctx
                 .device
                 .poll(wgpu::PollType::Wait {
-                    submission_index: None,
+                    submission_index: Some(submission),
                     timeout: Some(GPU_POLL_TIMEOUT),
                 })
                 .map_err(|e| anyhow!("GPU poll timed out or failed reading DP payload: {e:?}"))?;
