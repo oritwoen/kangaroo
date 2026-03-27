@@ -406,6 +406,17 @@ fn parse_gpu_selection(gpu_str: &str, available_count: usize) -> anyhow::Result<
     Ok(indices)
 }
 
+fn uses_direct_default_gpu_path(gpu_arg_raw: &str, include_integrated: bool) -> bool {
+    if include_integrated {
+        return false;
+    }
+
+    let trimmed = gpu_arg_raw.trim();
+    !trimmed.eq_ignore_ascii_case("all")
+        && !trimmed.contains(',')
+        && trimmed.parse::<u32>().ok() == Some(0)
+}
+
 fn filter_integrated_from_all_selection(
     selected: Vec<u32>,
     gpu_devices: &[gpu_crypto::GpuDeviceInfo],
@@ -470,6 +481,14 @@ fn gpu_weight_for_device_type(device_type: wgpu::DeviceType) -> u32 {
         wgpu::DeviceType::IntegratedGpu => 2,
         wgpu::DeviceType::Cpu => 1,
         _ => 1,
+    }
+}
+
+pub(crate) fn recommended_auto_kangaroos(optimal_k: u32, range_bits: u32) -> u32 {
+    if range_bits <= 40 {
+        optimal_k.min(32_768)
+    } else {
+        optimal_k
     }
 }
 
@@ -728,6 +747,166 @@ fn recover_key_from_j(j_bytes: &[u8], mod_step: Scalar, mod_start: Scalar) -> Ve
     k_be[first_nonzero..].to_vec()
 }
 
+fn run_single_gpu_solver(
+    args: &Args,
+    pubkey: Point,
+    start: crate::crypto::U256,
+    range_bits: u32,
+    effective_range: u32,
+    constraint: &Option<ModConstraint>,
+    gpu_context: gpu_crypto::GpuContext,
+) -> anyhow::Result<()> {
+    let device_name = gpu_context.device_name().to_string();
+    if !args.quiet && !args.json {
+        info!("GPU: {}", device_name);
+        info!("Compute units: {}", gpu_context.compute_units());
+    }
+
+    let requested_num_k = args
+        .kangaroos
+        .unwrap_or_else(|| recommended_auto_kangaroos(gpu_context.optimal_kangaroos(), effective_range));
+    let max_k_for_range = if effective_range >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << effective_range).max(3)
+    };
+    let num_k = requested_num_k.min(max_k_for_range);
+    if !args.quiet && !args.json && num_k != requested_num_k {
+        info!(
+            "Capping kangaroos from {} to {} for {}-bit range",
+            requested_num_k, num_k, effective_range
+        );
+    }
+    let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
+        let density_penalty = (num_k as f64).log2() as u32 / 2;
+        let density_tweak = if effective_range <= 40 { 2 } else { 0 };
+        let auto_dp = (effective_range / 2)
+            .saturating_sub(density_penalty.saturating_add(density_tweak));
+        auto_dp.clamp(8, 40)
+    });
+
+    if !args.quiet && !args.json {
+        info!("DP bits: {}", dp_bits);
+        info!("Kangaroos: {}", num_k);
+    }
+
+    let mut solver = match constraint {
+        Some(c) => solver::KangarooSolver::new_with_base(
+            gpu_context,
+            c.transformed_pubkey,
+            c.j_start,
+            c.effective_range_bits,
+            dp_bits,
+            num_k,
+            c.base_point,
+        )?,
+        None => solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?,
+    };
+
+    let expected_ops = 1u128
+        .checked_shl((effective_range / 2) as u32)
+        .unwrap_or(u64::MAX as u128)
+        .min(u64::MAX as u128) as u64;
+    let pb = if args.quiet || args.json {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(expected_ops);
+        pb.set_style(cli::default_progress_style());
+        pb
+    };
+
+    if !args.quiet && !args.json {
+        info!("Starting search...");
+    }
+
+    let max_ops = if args.max_ops == 0 {
+        u64::MAX
+    } else {
+        args.max_ops
+    };
+
+    let start_time = Instant::now();
+
+    loop {
+        let result = solver.step()?;
+        let total_ops = solver.total_operations();
+        pb.set_position(total_ops);
+
+        if let Some(j_or_key) = result {
+            let private_key = match constraint {
+                Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
+                None => j_or_key,
+            };
+            let duration = start_time.elapsed();
+            pb.finish_with_message("FOUND!");
+            let key_hex = hex::encode(&private_key);
+            let key_hex_trimmed = key_hex.trim_start_matches('0');
+            let key_hex_display = if key_hex_trimmed.is_empty() {
+                "0"
+            } else {
+                key_hex_trimmed
+            };
+
+            if !crypto::verify_key(&private_key, &pubkey) {
+                error!("Verification FAILED - this is a bug!");
+                continue;
+            }
+
+            if args.json {
+                let time_seconds = duration.as_secs_f64();
+                let rate = total_ops as f64 / time_seconds;
+                let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
+
+                let result = BenchmarkResult {
+                    metric: "hash_rate".to_string(),
+                    value: rate,
+                    unit: "ops/s".to_string(),
+                    metadata: Metadata {
+                        device: device_name.clone(),
+                        range_bits: effective_range,
+                        algorithm: "pollard_kangaroo".to_string(),
+                        total_ops,
+                        time_seconds,
+                        k_factor,
+                    },
+                };
+                println!("{}", serde_json::to_string(&result)?);
+            } else if args.quiet {
+                println!("{}", key_hex_display);
+            } else {
+                info!("Private key found: 0x{}", key_hex_display);
+                info!("Verification: SUCCESS");
+                info!("Total operations: {}", total_ops);
+                info!("Time elapsed: {:.2}s", duration.as_secs_f64());
+                info!(
+                    "K-factor: {:.3}",
+                    total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
+                );
+            }
+
+            if let Some(ref output) = args.output {
+                std::fs::write(output, &key_hex)?;
+                if !args.quiet && !args.json {
+                    info!("Result written to: {}", output);
+                }
+            }
+
+            return Ok(());
+        }
+
+        if total_ops >= max_ops {
+            pb.finish_with_message("LIMIT REACHED");
+            if !args.quiet && !args.json {
+                info!(
+                    "Maximum operations reached ({}) without finding key",
+                    max_ops
+                );
+            }
+            return Err(anyhow!("Key not found within {} operations", max_ops));
+        }
+    }
+}
+
 pub fn run(args: Args) -> anyhow::Result<()> {
     cli::init_tracing(false, args.quiet || args.json || args.benchmark);
 
@@ -747,6 +926,14 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             return Err(anyhow!(
                 "--benchmark currently supports GPU only; remove --cpu"
             ));
+        }
+
+        if uses_direct_default_gpu_path(&args.gpu, args.include_integrated) {
+            let ctx = pollster::block_on(gpu_crypto::GpuContext::new_from_global_index(
+                0,
+                args.backend,
+            ))?;
+            return benchmark::run_with_context(ctx, args.save_benchmarks);
         }
 
         let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
@@ -915,6 +1102,22 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
+    if uses_direct_default_gpu_path(&args.gpu, args.include_integrated) {
+        let gpu_context = pollster::block_on(gpu_crypto::GpuContext::new_from_global_index(
+            0,
+            args.backend,
+        ))?;
+        return run_single_gpu_solver(
+            &args,
+            pubkey,
+            start,
+            range_bits,
+            effective_range,
+            &constraint,
+            gpu_context,
+        );
+    }
+
     // Parse GPU selection and validate against available devices
     let gpu_devices = pollster::block_on(gpu_crypto::enumerate_gpus(args.backend))?;
     let gpu_indices = filter_integrated_from_all_selection(
@@ -932,152 +1135,15 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             .unwrap_or(args.backend);
         let gpu_context =
             pollster::block_on(gpu_crypto::GpuContext::new(gpu_indices[0], single_backend))?;
-        let device_name = gpu_context.device_name().to_string();
-        if !args.quiet && !args.json {
-            info!("GPU: {}", device_name);
-            info!("Compute units: {}", gpu_context.compute_units());
-        }
-
-        let requested_num_k = args.kangaroos.unwrap_or(gpu_context.optimal_kangaroos());
-        let max_k_for_range = if effective_range >= 32 {
-            u32::MAX
-        } else {
-            (1u32 << effective_range).max(3)
-        };
-        let num_k = requested_num_k.min(max_k_for_range);
-        if !args.quiet && !args.json && num_k != requested_num_k {
-            info!(
-                "Capping kangaroos from {} to {} for {}-bit range",
-                requested_num_k, num_k, effective_range
-            );
-        }
-        let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
-            let auto_dp = (effective_range / 2).saturating_sub((num_k as f64).log2() as u32 / 2);
-            auto_dp.clamp(8, 40)
-        });
-
-        if !args.quiet && !args.json {
-            info!("DP bits: {}", dp_bits);
-            info!("Kangaroos: {}", num_k);
-        }
-
-        let mut solver = match &constraint {
-            Some(c) => solver::KangarooSolver::new_with_base(
-                gpu_context,
-                c.transformed_pubkey,
-                c.j_start,
-                c.effective_range_bits,
-                dp_bits,
-                num_k,
-                c.base_point,
-            )?,
-            None => {
-                solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
-            }
-        };
-
-        let expected_ops = 1u128
-            .checked_shl((effective_range / 2) as u32)
-            .unwrap_or(u64::MAX as u128)
-            .min(u64::MAX as u128) as u64;
-        let pb = if args.quiet || args.json {
-            ProgressBar::hidden()
-        } else {
-            let pb = ProgressBar::new(expected_ops);
-            pb.set_style(cli::default_progress_style());
-            pb
-        };
-
-        if !args.quiet && !args.json {
-            info!("Starting search...");
-        }
-
-        let max_ops = if args.max_ops == 0 {
-            u64::MAX
-        } else {
-            args.max_ops
-        };
-
-        let start_time = Instant::now();
-
-        loop {
-            let result = solver.step()?;
-            let total_ops = solver.total_operations();
-            pb.set_position(total_ops);
-
-            if let Some(j_or_key) = result {
-                let private_key = match &constraint {
-                    Some(c) => recover_key_from_j(&j_or_key, c.mod_step, c.mod_start),
-                    None => j_or_key,
-                };
-                let duration = start_time.elapsed();
-                pb.finish_with_message("FOUND!");
-                let key_hex = hex::encode(&private_key);
-                let key_hex_trimmed = key_hex.trim_start_matches('0');
-                let key_hex_display = if key_hex_trimmed.is_empty() {
-                    "0"
-                } else {
-                    key_hex_trimmed
-                };
-
-                if !crypto::verify_key(&private_key, &pubkey) {
-                    error!("Verification FAILED - this is a bug!");
-                    continue;
-                }
-
-                if args.json {
-                    let time_seconds = duration.as_secs_f64();
-                    let rate = total_ops as f64 / time_seconds;
-                    let k_factor = total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0);
-
-                    let result = BenchmarkResult {
-                        metric: "hash_rate".to_string(),
-                        value: rate,
-                        unit: "ops/s".to_string(),
-                        metadata: Metadata {
-                            device: device_name,
-                            range_bits: effective_range,
-                            algorithm: "pollard_kangaroo".to_string(),
-                            total_ops,
-                            time_seconds,
-                            k_factor,
-                        },
-                    };
-                    println!("{}", serde_json::to_string(&result)?);
-                } else if args.quiet {
-                    println!("{}", key_hex_display);
-                } else {
-                    info!("Private key found: 0x{}", key_hex_display);
-                    info!("Verification: SUCCESS");
-                    info!("Total operations: {}", total_ops);
-                    info!("Time elapsed: {:.2}s", duration.as_secs_f64());
-                    info!(
-                        "K-factor: {:.3}",
-                        total_ops as f64 / (2.0_f64).powf(effective_range as f64 / 2.0)
-                    );
-                }
-
-                if let Some(ref output) = args.output {
-                    std::fs::write(output, &key_hex)?;
-                    if !args.quiet && !args.json {
-                        info!("Result written to: {}", output);
-                    }
-                }
-
-                return Ok(());
-            }
-
-            if total_ops >= max_ops {
-                pb.finish_with_message("LIMIT REACHED");
-                if !args.quiet && !args.json {
-                    info!(
-                        "Maximum operations reached ({}) without finding key",
-                        max_ops
-                    );
-                }
-                return Err(anyhow!("Key not found within {} operations", max_ops));
-            }
-        }
+        return run_single_gpu_solver(
+            &args,
+            pubkey,
+            start,
+            range_bits,
+            effective_range,
+            &constraint,
+            gpu_context,
+        );
     }
 
     let mut gpu_contexts = Vec::new();
@@ -1145,7 +1211,10 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         );
     }
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
-        let auto_dp = (effective_range / 2).saturating_sub((total_k as f64).log2() as u32 / 2);
+        let density_penalty = (total_k as f64).log2() as u32 / 2;
+        let density_tweak = if effective_range <= 40 { 2 } else { 0 };
+        let auto_dp = (effective_range / 2)
+            .saturating_sub(density_penalty.saturating_add(density_tweak));
         auto_dp.clamp(8, 40)
     });
 

@@ -5,7 +5,7 @@ use crate::crypto::{Point, U256};
 use crate::gpu::{GpuAffinePoint, GpuKangaroo};
 use crate::math::negate_256_be;
 use anyhow::Result;
-use k256::elliptic_curve::ops::Reduce;
+use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
 use k256::U256 as K256U256;
 use k256::{ProjectivePoint, Scalar};
 use rayon::prelude::*;
@@ -18,19 +18,23 @@ pub type JumpTables = (JumpPointTable, JumpDistanceTable);
 pub fn generate_jump_tables(range_bits: u32, base_point: &ProjectivePoint) -> JumpTables {
     const TABLE_SIZE: usize = 256;
 
-    let mut jump_points = Vec::with_capacity(TABLE_SIZE);
-    let mut jump_distances = Vec::with_capacity(TABLE_SIZE);
-
+    let base_is_generator = *base_point == ProjectivePoint::GENERATOR;
     let jump_exp = range_bits / 2;
 
-    for i in 0..TABLE_SIZE {
-        let jump_scalar_bytes = make_step_scalar_bytes(i as u32, jump_exp, 0x811c9dc5u32);
+    let entries: Vec<(GpuAffinePoint, [u32; 8])> = (0..TABLE_SIZE)
+        .into_par_iter()
+        .map(|i| {
+            let jump_scalar_bytes = make_step_scalar_bytes(i as u32, jump_exp, 0x811c9dc5u32);
+            let jump_scalar = Scalar::reduce(K256U256::from_be_slice(&jump_scalar_bytes));
+            let jump_point = mul_base(base_point, &jump_scalar, base_is_generator).to_affine();
+            (
+                affine_to_gpu(&jump_point),
+                scalar_be_to_limbs(&jump_scalar_bytes),
+            )
+        })
+        .collect();
 
-        let jump_scalar = Scalar::reduce(K256U256::from_be_slice(&jump_scalar_bytes));
-        let jump_point = (*base_point * jump_scalar).to_affine();
-        jump_points.push(affine_to_gpu(&jump_point));
-        jump_distances.push(scalar_be_to_limbs(&jump_scalar_bytes));
-    }
+    let (jump_points, jump_distances): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
 
     tracing::debug!("Jump table generated: {} entries", TABLE_SIZE);
 
@@ -115,10 +119,19 @@ pub fn initialize_kangaroos(
         grid_delta
     };
 
-    // Pre-compute NonZero range_size for modulo (always non-zero for range_bits > 0)
-    let nz_range = nonzero_u256(range_size);
+    // range_size is always a power of two here, so modulo can use a cheap bitmask.
+    let range_mask = range_size.wrapping_sub(&K256U256::ONE);
+    let jitter_span = grid_delta.shr_vartime(1);
+    let jitter_span = if jitter_span == K256U256::ZERO {
+        K256U256::ONE
+    } else {
+        jitter_span
+    };
+    let jitter_mask = jitter_span.wrapping_sub(&K256U256::ONE);
+    let jitter_span_is_power_of_two = (jitter_span & jitter_mask) == K256U256::ZERO;
 
     let neg_pubkey = pubkey.neg();
+    let base_is_generator = *base_point == ProjectivePoint::GENERATOR;
 
     // Parallel initialization with rayon
     let kangaroos: Vec<GpuKangaroo> = (0..num_kangaroos)
@@ -138,23 +151,32 @@ pub fn initialize_kangaroos(
             let grid_pos = i_uint.wrapping_mul(&grid_delta);
 
             let prng_seed = hash_seed(global_i, 0xCAFEBABE);
-            let jitter_span = grid_delta.shr_vartime(1);
-            let jitter_span = if jitter_span == K256U256::ZERO {
-                K256U256::ONE
+            let seed_uint = u128_to_u256(prng_seed);
+            let jitter = if jitter_span_is_power_of_two {
+                seed_uint & jitter_mask
             } else {
-                jitter_span
+                rem_u256(&seed_uint, &jitter_span)
             };
 
-            let seed_uint = u128_to_u256(prng_seed);
-            let jitter = rem_u256(&seed_uint, &jitter_span);
-
             let sum = grid_pos.wrapping_add(&jitter);
-            let (_, offset) = sum.div_rem(&nz_range);
+            let offset = sum & range_mask;
 
             let (point, dist) = match ktype {
-                0 => init_tame_kangaroo_at_offset(start, &offset, base_point),
-                1 => init_wild_kangaroo_at_offset(pubkey, &offset, &range_middle, base_point),
-                _ => init_wild_kangaroo_at_offset(&neg_pubkey, &offset, &range_middle, base_point),
+                0 => init_tame_kangaroo_at_offset(start, &offset, base_point, base_is_generator),
+                1 => init_wild_kangaroo_at_offset(
+                    pubkey,
+                    &offset,
+                    &range_middle,
+                    base_point,
+                    base_is_generator,
+                ),
+                _ => init_wild_kangaroo_at_offset(
+                    &neg_pubkey,
+                    &offset,
+                    &range_middle,
+                    base_point,
+                    base_is_generator,
+                ),
             };
 
             let gpu_point = affine_to_gpu(&point);
@@ -237,16 +259,29 @@ fn nonzero_u256(val: K256U256) -> crypto_bigint::NonZero<K256U256> {
     Option::from(crypto_bigint::NonZero::new(val)).expect("value must be non-zero")
 }
 
+fn mul_base(
+    base_point: &ProjectivePoint,
+    scalar: &Scalar,
+    base_is_generator: bool,
+) -> ProjectivePoint {
+    if base_is_generator {
+        ProjectivePoint::mul_by_generator(scalar)
+    } else {
+        *base_point * *scalar
+    }
+}
+
 /// Initialize a tame kangaroo at a specific offset from start.
 fn init_tame_kangaroo_at_offset(
     start: &U256,
     offset: &K256U256,
     base_point: &ProjectivePoint,
+    base_is_generator: bool,
 ) -> (k256::AffinePoint, [u32; 8]) {
     let start_uint = K256U256::from_le_slice(start);
     let sum = start_uint.wrapping_add(offset);
     let scalar = Scalar::reduce(sum);
-    let point = *base_point * scalar;
+    let point = mul_base(base_point, &scalar, base_is_generator);
 
     // Distance = offset relative to start (full 256-bit)
     let offset_be = u256_to_be_bytes(offset);
@@ -262,6 +297,7 @@ fn init_wild_kangaroo_at_offset(
     raw_offset: &K256U256,
     range_middle: &K256U256,
     base_point: &ProjectivePoint,
+    base_is_generator: bool,
 ) -> (k256::AffinePoint, [u32; 8]) {
     // Detect sign: sbb returns borrow != 0 when raw_offset < range_middle
     let (diff, borrow) = raw_offset.sbb(range_middle, k256::elliptic_curve::bigint::Limb::ZERO);
@@ -271,7 +307,7 @@ fn init_wild_kangaroo_at_offset(
         // raw_offset >= range_middle: positive direction
         // diff = raw_offset - range_middle (exact, no wrap)
         let scalar = Scalar::reduce(diff);
-        let offset_point = *base_point * scalar;
+        let offset_point = mul_base(base_point, &scalar, base_is_generator);
         let wild_point = *pubkey + offset_point;
 
         let delta_be = u256_to_be_bytes(&diff);
@@ -280,7 +316,7 @@ fn init_wild_kangaroo_at_offset(
         // raw_offset < range_middle: negative direction
         let delta = range_middle.wrapping_sub(raw_offset);
         let scalar = Scalar::reduce(delta);
-        let offset_point = *base_point * scalar;
+        let offset_point = mul_base(base_point, &scalar, base_is_generator);
         let wild_point = *pubkey - offset_point;
 
         // Store negative offset as two's complement
@@ -308,6 +344,7 @@ mod tests {
             &offset,
             &range_middle,
             &ProjectivePoint::GENERATOR,
+            true,
         );
 
         let gpu_point = affine_to_gpu(&point);

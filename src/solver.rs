@@ -198,42 +198,37 @@ impl KangarooSolver {
         num_kangaroos: u32,
         verbose: bool,
     ) -> Result<KangarooPipeline> {
-        let mut variants = vec![WorkgroupVariant::Wg64];
-        if ctx.max_workgroup_size() >= 128 {
-            variants.push(WorkgroupVariant::Wg128);
-        }
+        let variant = if ctx.max_workgroup_size() >= 128 && num_kangaroos > 65_536 {
+            WorkgroupVariant::Wg128
+        } else {
+            WorkgroupVariant::Wg64
+        };
 
-        let mut best: Option<(u128, KangarooPipeline)> = None;
-
-        for variant in variants {
-            let (pipeline, elapsed) = Self::benchmark_variant(
-                ctx,
-                variant,
-                config,
-                table_refs,
-                kangaroos,
-                num_kangaroos,
-            )?;
-
+        if variant == WorkgroupVariant::Wg64 {
             if verbose {
-                info!(
-                    "Kernel probe: workgroup={} dispatch={}ms",
-                    variant.size(),
-                    elapsed
-                );
+                info!("Skipping kernel probe, using workgroup=64");
             }
-
-            match &best {
-                None => best = Some((elapsed, pipeline)),
-                Some((best_elapsed, _)) if elapsed < *best_elapsed => {
-                    best = Some((elapsed, pipeline))
-                }
-                _ => {}
-            }
+            return KangarooPipeline::new(ctx, variant);
         }
 
-        best.map(|(_, p)| p)
-            .ok_or_else(|| anyhow!("No compatible kernel variant available"))
+        let (pipeline, elapsed) = Self::benchmark_variant(
+            ctx,
+            variant,
+            config,
+            table_refs,
+            kangaroos,
+            num_kangaroos,
+        )?;
+
+        if verbose {
+            info!(
+                "Kernel warmup: workgroup={} dispatch={}ms",
+                variant.size(),
+                elapsed
+            );
+        }
+
+        Ok(pipeline)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -609,6 +604,13 @@ impl KangarooSolver {
         let mut best_steps = candidates[0];
         let dp_meta = Self::dp_meta(dp_bits);
 
+        if self.workgroup_size == 64 && self.num_kangaroos <= 65_536 && self.steps_per_call == 16 {
+            if verbose {
+                info!("Skipping calibration for small-herd Wg64 path; using steps_per_call=16");
+            }
+            return Ok(());
+        }
+
         if verbose {
             info!("Calibrating GPU performance...");
         }
@@ -662,6 +664,12 @@ impl KangarooSolver {
 
             if elapsed_ms <= TARGET_DISPATCH_MS {
                 best_steps = steps;
+
+                // Candidates double each time. If we're already above half the budget,
+                // the next probe is overwhelmingly likely to miss and just burn startup time.
+                if elapsed_ms.saturating_mul(2) > TARGET_DISPATCH_MS {
+                    break;
+                }
             } else {
                 // Too slow, stop searching
                 break;

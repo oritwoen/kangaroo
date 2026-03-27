@@ -41,10 +41,14 @@ struct CaseResult {
 }
 
 pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bool) -> Result<()> {
+    let ctx = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, backend))?;
+    run_with_context(ctx, save_to_markdown)
+}
+
+pub fn run_with_context(ctx: gpu_crypto::GpuContext, save_to_markdown: bool) -> Result<()> {
     println!("Kangaroo Benchmark Suite");
     println!("========================\n");
 
-    let ctx = pollster::block_on(gpu_crypto::GpuContext::new(gpu_index, backend))?;
     let device_name = ctx.device_name().to_string();
     let compute_units = ctx.compute_units();
 
@@ -57,15 +61,17 @@ pub fn run(gpu_index: u32, backend: gpu_crypto::GpuBackend, save_to_markdown: bo
     );
     println!("{}", "-".repeat(62));
 
-    let num_k = ctx.optimal_kangaroos();
     let mut results = Vec::with_capacity(CASES.len());
 
     for case in CASES {
+        let num_k = crate::recommended_auto_kangaroos(ctx.optimal_kangaroos(), case.range_bits);
         let pubkey = crypto::parse_pubkey(case.pubkey)?;
         let start = crypto::parse_hex_u256(case.start)?;
 
+        let density_penalty = (num_k as f64).log2() as u32 / 2;
+        let density_tweak = if case.range_bits <= 40 { 2 } else { 0 };
         let dp_bits = (case.range_bits / 2)
-            .saturating_sub((num_k as f64).log2() as u32 / 2)
+            .saturating_sub(density_penalty.saturating_add(density_tweak))
             .clamp(8, 40);
 
         let mut solver = solver::KangarooSolver::new(
