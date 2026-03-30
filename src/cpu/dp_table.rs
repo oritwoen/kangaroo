@@ -211,7 +211,7 @@ pub(crate) fn compute_candidate_scalars(
     tame_d: Scalar,
     wild_d: Scalar,
 ) -> [Scalar; 8] {
-    let neg_base = Scalar::ZERO - base;
+    let neg_base = -base;
     [
         base + tame_d - wild_d,
         base - tame_d - wild_d,
@@ -255,7 +255,7 @@ fn compute_candidate_keys_cross_wild(
     for &d1 in &d1_pair {
         for &d2 in &d2_pair {
             let k_diff = (d2 - d1) * half;
-            let candidates = [k_diff, Scalar::ZERO - k_diff];
+            let candidates = [k_diff, -k_diff];
 
             for candidate in &candidates {
                 let key_bytes = scalar_to_key_bytes(candidate);
@@ -291,7 +291,7 @@ fn distance_scalar_pair(dist_le_bytes: &[u8; 32]) -> [Scalar; 2] {
 
     let neg_bytes = negate_u256_bytes(dist_le_bytes);
     let neg_uint = K256U256::from_le_slice(&neg_bytes);
-    let negated = Scalar::ZERO - <Scalar as Reduce<K256U256>>::reduce(neg_uint);
+    let negated = -<Scalar as Reduce<K256U256>>::reduce(neg_uint);
 
     [direct, negated]
 }
@@ -633,7 +633,7 @@ mod tests {
         let start_s = scalar_from_u64(90);
         let tame_dist = scalar_from_u64(11);
         let wild_dist = scalar_from_u64(7);
-        let neg_start = Scalar::ZERO - start_s;
+        let neg_start = -start_s;
         let k = neg_start + tame_dist - wild_dist;
 
         let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
@@ -648,7 +648,7 @@ mod tests {
         let start_s = scalar_from_u64(95);
         let tame_dist = scalar_from_u64(19);
         let wild_dist = scalar_from_u64(9);
-        let neg_start = Scalar::ZERO - start_s;
+        let neg_start = -start_s;
         let k = neg_start - tame_dist - wild_dist;
 
         let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
@@ -663,7 +663,7 @@ mod tests {
         let start_s = scalar_from_u64(104);
         let tame_dist = scalar_from_u64(15);
         let wild_dist = scalar_from_u64(6);
-        let neg_start = Scalar::ZERO - start_s;
+        let neg_start = -start_s;
         let k = neg_start + tame_dist + wild_dist;
 
         let tame_point = ProjectivePoint::mul_by_generator(&(start_s - tame_dist));
@@ -678,7 +678,7 @@ mod tests {
         let start_s = scalar_from_u64(77);
         let tame_dist = scalar_from_u64(13);
         let wild_dist = scalar_from_u64(5);
-        let neg_start = Scalar::ZERO - start_s;
+        let neg_start = -start_s;
         let k = neg_start - tame_dist + wild_dist;
 
         let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
@@ -693,7 +693,7 @@ mod tests {
         let start_s = scalar_from_u64(120);
         let tame_dist = scalar_from_u64(21);
         let wild_dist = scalar_from_u64(8);
-        let neg_start = Scalar::ZERO - start_s;
+        let neg_start = -start_s;
         let k = neg_start - tame_dist - wild_dist;
 
         let tame_point = ProjectivePoint::mul_by_generator(&(start_s + tame_dist));
@@ -911,7 +911,7 @@ mod tests {
         let mut neg_ten = [0xFFu8; 32];
         neg_ten[0] = 0xF6;
         let pair = super::distance_scalar_pair(&neg_ten);
-        let expected_neg = Scalar::ZERO - scalar_from_u64(10);
+        let expected_neg = -scalar_from_u64(10);
         assert_ne!(pair[0], expected_neg); // direct gives wrong result for wrapped
         assert_eq!(pair[1], expected_neg); // negated gives correct n - 10
     }
