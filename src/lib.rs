@@ -762,9 +762,9 @@ fn run_single_gpu_solver(
         info!("Compute units: {}", gpu_context.compute_units());
     }
 
-    let requested_num_k = args
-        .kangaroos
-        .unwrap_or_else(|| recommended_auto_kangaroos(gpu_context.optimal_kangaroos(), effective_range));
+    let requested_num_k = args.kangaroos.unwrap_or_else(|| {
+        recommended_auto_kangaroos(gpu_context.optimal_kangaroos(), effective_range)
+    });
     let max_k_for_range = if effective_range >= 32 {
         u32::MAX
     } else {
@@ -780,8 +780,8 @@ fn run_single_gpu_solver(
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
         let density_penalty = (num_k as f64).log2() as u32 / 2;
         let density_tweak = if effective_range <= 40 { 2 } else { 0 };
-        let auto_dp = (effective_range / 2)
-            .saturating_sub(density_penalty.saturating_add(density_tweak));
+        let auto_dp =
+            (effective_range / 2).saturating_sub(density_penalty.saturating_add(density_tweak));
         auto_dp.clamp(8, 40)
     });
 
@@ -800,7 +800,9 @@ fn run_single_gpu_solver(
             num_k,
             c.base_point,
         )?,
-        None => solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?,
+        None => {
+            solver::KangarooSolver::new(gpu_context, pubkey, start, range_bits, dp_bits, num_k)?
+        }
     };
 
     let expected_ops = 1u128
@@ -1213,8 +1215,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let dp_bits = args.dp_bits.map(|v| v.clamp(8, 40)).unwrap_or_else(|| {
         let density_penalty = (total_k as f64).log2() as u32 / 2;
         let density_tweak = if effective_range <= 40 { 2 } else { 0 };
-        let auto_dp = (effective_range / 2)
-            .saturating_sub(density_penalty.saturating_add(density_tweak));
+        let auto_dp =
+            (effective_range / 2).saturating_sub(density_penalty.saturating_add(density_tweak));
         auto_dp.clamp(8, 40)
     });
 

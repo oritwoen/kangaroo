@@ -211,14 +211,8 @@ impl KangarooSolver {
             return KangarooPipeline::new(ctx, variant);
         }
 
-        let (pipeline, elapsed) = Self::benchmark_variant(
-            ctx,
-            variant,
-            config,
-            table_refs,
-            kangaroos,
-            num_kangaroos,
-        )?;
+        let (pipeline, elapsed) =
+            Self::benchmark_variant(ctx, variant, config, table_refs, kangaroos, num_kangaroos)?;
 
         if verbose {
             info!(
