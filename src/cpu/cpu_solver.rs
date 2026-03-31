@@ -137,7 +137,9 @@ impl CpuKangarooSolver {
             }
 
             // Tame step
-            let tame_affine = tame_cached_affine.take().unwrap_or_else(|| tame_pos.to_affine());
+            let tame_affine = tame_cached_affine
+                .take()
+                .unwrap_or_else(|| tame_pos.to_affine());
             let tame_x = get_x_low_from_affine(&tame_affine);
             let tame_dist_before = tame_dist;
             let mut jump_idx = (tame_x & 15) as usize;
@@ -198,7 +200,9 @@ impl CpuKangarooSolver {
             }
 
             // Wild step
-            let wild_affine = wild_cached_affine.take().unwrap_or_else(|| wild_pos.to_affine());
+            let wild_affine = wild_cached_affine
+                .take()
+                .unwrap_or_else(|| wild_pos.to_affine());
             let wild_x = get_x_low_from_affine(&wild_affine);
             let wild_dist_before = wild_dist;
             let mut jump_idx = (wild_x & 15) as usize;
