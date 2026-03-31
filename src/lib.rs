@@ -1191,7 +1191,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let requested_total_k = args.kangaroos.unwrap_or_else(|| {
         gpu_contexts
             .iter()
-            .map(|(_, ctx, _, _)| ctx.optimal_kangaroos())
+            .map(|(_, ctx, _, _)| recommended_auto_kangaroos(ctx.optimal_kangaroos(), effective_range))
             .fold(0u32, |acc, k| acc.saturating_add(k))
     });
     let total_requested_capped = requested_total_k.min(max_k_for_range);
