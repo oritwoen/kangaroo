@@ -38,8 +38,12 @@ impl KangarooPipeline {
 
         let device_key = Arc::as_ptr(&ctx.device) as usize;
         let cache = PIPELINE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut guard = cache.lock().expect("pipeline cache poisoned");
-        if let Some(pipeline) = guard.get(&(device_key, variant)).cloned() {
+        if let Some(pipeline) = cache
+            .lock()
+            .expect("pipeline cache poisoned")
+            .get(&(device_key, variant))
+            .cloned()
+        {
             return Ok(pipeline);
         }
 
@@ -166,7 +170,10 @@ impl KangarooPipeline {
             variant,
         };
 
-        guard.insert((device_key, variant), pipeline.clone());
+        cache
+            .lock()
+            .expect("pipeline cache poisoned")
+            .insert((device_key, variant), pipeline.clone());
 
         Ok(pipeline)
     }
