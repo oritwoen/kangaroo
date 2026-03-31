@@ -127,6 +127,9 @@ impl CpuKangarooSolver {
             .map(|d| self.base_point * *d)
             .collect();
 
+        let mut tame_cached_affine: Option<AffinePoint> = None;
+        let mut wild_cached_affine: Option<AffinePoint> = None;
+
         loop {
             let elapsed = start_time.elapsed();
             if elapsed >= timeout {
@@ -134,7 +137,7 @@ impl CpuKangarooSolver {
             }
 
             // Tame step
-            let tame_affine = tame_pos.to_affine();
+            let tame_affine = tame_cached_affine.take().unwrap_or_else(|| tame_pos.to_affine());
             let tame_x = get_x_low_from_affine(&tame_affine);
             let tame_dist_before = tame_dist;
             let mut jump_idx = (tame_x & 15) as usize;
@@ -153,7 +156,8 @@ impl CpuKangarooSolver {
             self.ops += 1;
 
             tame_cycle_counter += 1;
-            let tame_new_x = get_x_low_from_affine(&tame_pos.to_affine());
+            let post_tame_affine = tame_pos.to_affine();
+            let tame_new_x = get_x_low_from_affine(&post_tame_affine);
             let tame_x_low = (tame_new_x & 0xFFFF) as u32;
             if tame_x_low == (tame_repeat >> 16) {
                 tame_repeat = (tame_x_low << 16) | ((tame_repeat & 0xFFFF) + 1);
@@ -170,6 +174,8 @@ impl CpuKangarooSolver {
                 tame_dist += jump_distances[escape_idx];
                 tame_cycle_counter = 0;
                 tame_repeat = 0;
+            } else {
+                tame_cached_affine = Some(post_tame_affine);
             }
 
             // Check DP — do NOT reset cycle counters here; a cycle
@@ -192,7 +198,7 @@ impl CpuKangarooSolver {
             }
 
             // Wild step
-            let wild_affine = wild_pos.to_affine();
+            let wild_affine = wild_cached_affine.take().unwrap_or_else(|| wild_pos.to_affine());
             let wild_x = get_x_low_from_affine(&wild_affine);
             let wild_dist_before = wild_dist;
             let mut jump_idx = (wild_x & 15) as usize;
@@ -211,7 +217,8 @@ impl CpuKangarooSolver {
             self.ops += 1;
 
             wild_cycle_counter += 1;
-            let wild_new_x = get_x_low_from_affine(&wild_pos.to_affine());
+            let post_wild_affine = wild_pos.to_affine();
+            let wild_new_x = get_x_low_from_affine(&post_wild_affine);
             let wild_x_low = (wild_new_x & 0xFFFF) as u32;
             if wild_x_low == (wild_repeat >> 16) {
                 wild_repeat = (wild_x_low << 16) | ((wild_repeat & 0xFFFF) + 1);
@@ -228,6 +235,8 @@ impl CpuKangarooSolver {
                 wild_dist += jump_distances[escape_idx];
                 wild_cycle_counter = 0;
                 wild_repeat = 0;
+            } else {
+                wild_cached_affine = Some(post_wild_affine);
             }
 
             // Check DP — same rationale as tame path: keep cycle
