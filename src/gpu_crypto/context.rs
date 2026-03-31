@@ -99,13 +99,35 @@ pub fn is_software_adapter(info: &wgpu::AdapterInfo) -> bool {
         || name_lower.contains("mesa software")
 }
 
-/// Enumerate available GPU devices, sorted by priority
-///
-/// Filters software renderers unless no hardware GPU is found.
-/// Deduplicates adapters by name (same GPU under multiple backends).
-/// Sorts by device type (Discrete > Virtual > Integrated > CPU)
-/// and backend priority (Vulkan > Metal > DX12 > GL).
-pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
+struct AdapterEntry {
+    adapter: wgpu::Adapter,
+    info: wgpu::AdapterInfo,
+    software: bool,
+    device_priority: u32,
+    backend_priority: u32,
+}
+
+fn device_priority(device_type: wgpu::DeviceType) -> u32 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::VirtualGpu => 1,
+        wgpu::DeviceType::IntegratedGpu => 2,
+        wgpu::DeviceType::Cpu => 3,
+        _ => 4,
+    }
+}
+
+fn backend_priority(backend: wgpu::Backend) -> u32 {
+    match backend {
+        wgpu::Backend::Vulkan => 0,
+        wgpu::Backend::Metal => 1,
+        wgpu::Backend::Dx12 => 2,
+        wgpu::Backend::Gl => 3,
+        _ => 4,
+    }
+}
+
+async fn enumerate_visible_adapters(backend: GpuBackend) -> Result<Vec<AdapterEntry>> {
     let backends = backend.to_wgpu_backends();
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends,
@@ -117,69 +139,59 @@ pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
         anyhow::bail!("No GPU adapters found");
     }
 
-    // Collect adapter info with sorting key
-    let mut entries: Vec<(String, wgpu::DeviceType, wgpu::Backend, bool, u32, u32)> = adapters
-        .iter()
-        .map(|a| {
-            let info = a.get_info();
-            let software = is_software_adapter(&info);
-            let device_priority = match info.device_type {
-                wgpu::DeviceType::DiscreteGpu => 0,
-                wgpu::DeviceType::VirtualGpu => 1,
-                wgpu::DeviceType::IntegratedGpu => 2,
-                wgpu::DeviceType::Cpu => 3,
-                _ => 4,
-            };
-            let backend_priority = match info.backend {
-                wgpu::Backend::Vulkan => 0,
-                wgpu::Backend::Metal => 1,
-                wgpu::Backend::Dx12 => 2,
-                wgpu::Backend::Gl => 3,
-                _ => 4,
-            };
-            (
-                info.name.clone(),
-                info.device_type,
-                info.backend,
-                software,
-                device_priority,
-                backend_priority,
-            )
+    let mut entries: Vec<AdapterEntry> = adapters
+        .into_iter()
+        .map(|adapter| {
+            let info = adapter.get_info();
+            AdapterEntry {
+                software: is_software_adapter(&info),
+                device_priority: device_priority(info.device_type),
+                backend_priority: backend_priority(info.backend),
+                adapter,
+                info,
+            }
         })
         .collect();
 
-    // Sort by device type then backend priority
-    entries.sort_by_key(|e| (e.4, e.5));
+    entries.sort_by_key(|e| (e.device_priority, e.backend_priority));
 
-    // Filter software renderers unless no hardware found
-    let has_hardware = entries.iter().any(|e| !e.3 && e.4 < 3);
+    let has_hardware = entries.iter().any(|e| !e.software && e.device_priority < 3);
     if has_hardware {
-        entries.retain(|e| !e.3 && e.4 < 3);
+        entries.retain(|e| !e.software && e.device_priority < 3);
     } else {
         warn!("No hardware GPU found, listing software renderers");
     }
 
-    // Deduplicate across backends: for each adapter name, keep only the best backend
-    // (lowest backend_priority). This preserves multiple physical GPUs of the same model
-    // on the same backend while removing cross-backend duplicates (e.g. Vulkan + GL).
     let mut best_backend_by_name: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
     for e in &entries {
-        let current_best = best_backend_by_name.entry(e.0.clone()).or_insert(e.5);
-        if e.5 < *current_best {
-            *current_best = e.5;
+        let current_best = best_backend_by_name
+            .entry(e.info.name.clone())
+            .or_insert(e.backend_priority);
+        if e.backend_priority < *current_best {
+            *current_best = e.backend_priority;
         }
     }
-    entries.retain(|e| e.5 == *best_backend_by_name.get(&e.0).unwrap());
+    entries.retain(|e| e.backend_priority == *best_backend_by_name.get(&e.info.name).unwrap());
 
-    // Assign sequential indices
-    let devices: Vec<GpuDeviceInfo> = entries
+    Ok(entries)
+}
+
+/// Enumerate available GPU devices, sorted by priority
+///
+/// Filters software renderers unless no hardware GPU is found.
+/// Deduplicates adapters by name (same GPU under multiple backends).
+/// Sorts by device type (Discrete > Virtual > Integrated > CPU)
+/// and backend priority (Vulkan > Metal > DX12 > GL).
+pub async fn enumerate_gpus(backend: GpuBackend) -> Result<Vec<GpuDeviceInfo>> {
+    let devices: Vec<GpuDeviceInfo> = enumerate_visible_adapters(backend)
+        .await?
         .into_iter()
         .enumerate()
-        .map(|(i, (name, device_type, backend, _, _, _))| GpuDeviceInfo {
-            name,
-            device_type,
-            backend,
+        .map(|(i, entry)| GpuDeviceInfo {
+            name: entry.info.name,
+            device_type: entry.info.device_type,
+            backend: entry.info.backend,
             index: i as u32,
         })
         .collect();
@@ -202,6 +214,17 @@ impl GpuContext {
             GpuBackend::Auto => Self::new_with_fallback(device_index).await,
             _ => Self::new_with_backend(device_index, backend).await,
         }
+    }
+
+    /// Create GPU context using the same global index ordering as `enumerate_gpus`.
+    /// This avoids enumerating once for selection and then again for device creation.
+    pub async fn new_from_global_index(device_index: u32, backend: GpuBackend) -> Result<Self> {
+        let entry = enumerate_visible_adapters(backend)
+            .await?
+            .into_iter()
+            .nth(device_index as usize)
+            .context("GPU device index out of range")?;
+        Self::from_adapter(entry.adapter, entry.info).await
     }
 
     /// Create GPU context trying backends in fallback order
@@ -296,7 +319,15 @@ impl GpuContext {
             .context("GPU device index out of range")?;
 
         let adapter_info = adapter.get_info();
+        Self::from_adapter(adapter, adapter_info).await
+    }
 
+    /// Create GPU context with a specific backend (accepts software renderers)
+    async fn new_with_backend(device_index: u32, backend: GpuBackend) -> Result<Self> {
+        Self::try_backend(device_index, backend, false).await
+    }
+
+    async fn from_adapter(adapter: wgpu::Adapter, adapter_info: wgpu::AdapterInfo) -> Result<Self> {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("gpu-crypto"),
@@ -318,11 +349,6 @@ impl GpuContext {
         })
     }
 
-    /// Create GPU context with a specific backend (accepts software renderers)
-    async fn new_with_backend(device_index: u32, backend: GpuBackend) -> Result<Self> {
-        Self::try_backend(device_index, backend, false).await
-    }
-
     pub fn device_name(&self) -> &str {
         &self.adapter_info.name
     }
@@ -342,9 +368,10 @@ impl GpuContext {
     /// Optimal batch size heuristic
     pub fn optimal_batch_size(&self) -> u32 {
         let workgroup_size = self.max_workgroup_size().min(128);
-        // Conservative limit to prevent TDR (Timeout Detection and Recovery) on Windows
-        // or just freezing the screen on Linux
-        let workgroups = self.max_workgroups().min(65535).min(4096);
+        // Conservative cap: very large grids make even the minimum 16-step dispatch too slow
+        // for our 50ms target and explode CPU-side initialization cost. Keep the default launch
+        // size smaller, then let solver calibration tune steps_per_call on top.
+        let workgroups = self.max_workgroups().min(65535).min(512);
         workgroup_size * workgroups
     }
 
