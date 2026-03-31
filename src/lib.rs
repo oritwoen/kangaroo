@@ -806,7 +806,7 @@ fn run_single_gpu_solver(
     };
 
     let expected_ops = 1u128
-        .checked_shl((effective_range / 2) as u32)
+        .checked_shl(effective_range / 2)
         .unwrap_or(u64::MAX as u128)
         .min(u64::MAX as u128) as u64;
     let pb = if args.quiet || args.json {
@@ -1031,7 +1031,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         );
 
         let expected_ops = 1u128
-            .checked_shl((effective_range / 2) as u32)
+            .checked_shl(effective_range / 2)
             .unwrap_or(u64::MAX as u128)
             .min(u64::MAX as u128) as u64;
         let pb = if args.quiet || args.json {
@@ -1284,7 +1284,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
 
     let expected_ops = 1u128
-        .checked_shl((effective_range / 2) as u32)
+        .checked_shl(effective_range / 2)
         .unwrap_or(u64::MAX as u128)
         .min(u64::MAX as u128) as u64;
     let pb = if args.quiet || args.json {
