@@ -1,3 +1,38 @@
+## [0.8.0] - 2026-04-01
+
+### Features
+
+- *(gpu)* Allow multiple devices (#69)
+
+### Bug Fixes
+
+- *(crypto)* Avoid panic on oversized U256 hex input (#75)
+- *(provider)* Allow exact-fit search ranges for provider bounds (#76)
+- *(cli)* Make benchmark dispatch explicit (#77)
+- *(solver)* Reset DP counter between calibration probes (#83)
+- *(ci)* Gate crates publish with release checks (#82)
+- *(solver)* Bound GPU poll waits to prevent indefinite hangs (#85)
+
+### Refactor
+
+- *(deps)* Drop unused dashmap, thiserror, and futures (#84)
+- *(solver)* Drop unused SharedResources and dead constructors (#89)
+- *(crypto)* Drop dead utils, remove stale dead_code allows (#90)
+- *(math)* Drop dead LE arithmetic and DP mask helpers (#92)
+- *(provider)* Drop unused is_provider predicate (#93)
+- *(dp_table)* Drop dead len and is_empty methods (#94)
+- *(dp_table)* Use Neg trait instead of Scalar::ZERO - x (#96)
+
+### Performance
+
+- *(solver)* Tighten walk and DP readback (#87)
+- *(dp_table)* Inline StoredDP dist as fixed-size array (#88)
+- *(cpu)* Avoid heap alloc in hot loop x-coordinate extraction (#91)
+- *(solver)* Pipeline GPU dispatch and DP readback (#95)
+- *(cpu)* Cache post-jump affine to skip redundant field inversions (#97)
+- *(solver)* Cut startup overhead for small-range solves (#99)
+- *(gpu)* Cache compute pipelines across repeated solves (#100)
+- *(gpu)* Narrow pipeline cache lock scope during compilation (#101)
 ## [0.7.1] - 2026-03-08
 
 ### Bug Fixes
@@ -17,6 +52,7 @@
 
 - Remove community section from README.md
 - Update README.md
+- *(release)* V0.7.1
 ## [0.7.0] - 2026-02-22
 
 ### Features

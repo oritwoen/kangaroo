@@ -12,11 +12,11 @@ kangaroo --benchmark
 
 | Range | Time | Ops | Rate | K |
 |-------|------|-----|------|-------|
-| 32-bit | 0.37s | 8,388,608 | 22.75 M/s | 128.000 |
-| 40-bit | 0.73s | 16,777,216 | 23.14 M/s | 16.000 |
-| 48-bit | 9.73s | 226,492,416 | 23.27 M/s | 13.500 |
+| 32-bit | 0.06s | 1,048,576 | 18.03 M/s | 16.000 |
+| 40-bit | 0.36s | 7,340,032 | 20.64 M/s | 7.000 |
+| 48-bit | 0.87s | 18,874,368 | 21.79 M/s | 1.125 |
 
-*Version: 0.7.1*
+*Version: 0.8.0*
 
 ### GPU: NVIDIA GeForce RTX 5060
 
@@ -38,8 +38,7 @@ kangaroo --benchmark
 | v0.6.0 | 17.00 M/s | +359% |
 | v0.7.0 | 23.33 M/s | +531% |
 | v0.7.1 | 23.27 M/s | +529% |
-
-Note: v0.7.0 and v0.7.1 rates are within normal run-to-run variance on RX 6800S.
+| v0.8.0 | 21.79 M/s | +489% |
 
 ## Contributing
 
