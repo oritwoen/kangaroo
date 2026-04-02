@@ -242,6 +242,10 @@ fn update_performance_history(content: &str, version: &str, time_secs: f64) -> S
     if let Some(range) = find_gpu_section(content, section_header) {
         let section = &content[range.0..range.1];
         let rows = parse_history_rows(section);
+        let has_data_rows = section.lines().any(|line| line.starts_with("| v"));
+        if has_data_rows && rows.is_empty() {
+            return content.to_string();
+        }
         let baseline = rows.first().map(|r| r.time).unwrap_or(time_secs);
         let new_rows = upsert_history_row(rows, &version_tag, time_secs, baseline);
         let new_section = format_history_section(&new_rows, baseline);
@@ -596,6 +600,39 @@ Submit your results!
         assert!(content.contains("### GPU A\n"));
         assert!(content.contains("### GPU ABC"));
         assert!(content.contains("1.00 M/s"));
+    }
+
+    #[test]
+    fn preserves_legacy_history_when_parse_fails() {
+        let existing = "\
+# Benchmark Results
+
+## Results
+
+### Test GPU
+
+| Range | Time | Ops | Rate |
+|-------|------|-----|------|
+| 48-bit | 10.00s | 100,000,000 | 10.00 M/s |
+
+*Version: 0.5.0*
+
+### Performance History
+
+| Version | 48-bit Rate | Improvement |
+|---------|-------------|-------------|
+| v0.2.0 | 3.70 M/s | baseline |
+| v0.5.0 | 8.84 M/s | +139% |
+
+## Contributing
+
+Submit your results!
+";
+
+        let content = generate_markdown("Test GPU", "0.6.0", &sample_results(), existing);
+        // Legacy M/s rows can't be parsed, so history section must be preserved as-is
+        assert!(content.contains("3.70 M/s"));
+        assert!(content.contains("8.84 M/s"));
     }
 
     #[test]
