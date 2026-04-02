@@ -21,8 +21,12 @@ const GPU_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MAX_DISTINGUISHED_POINTS: u32 = 65_536;
 const JUMP_TABLE_SIZE: u32 = 256;
-/// Target dispatch time in milliseconds (stay under TDR threshold)
-const TARGET_DISPATCH_MS: u128 = 50;
+/// Target dispatch time in milliseconds for calibration.
+///
+/// This is still comfortably below the multi-second GPU watchdog budgets on the
+/// supported backends, but high enough to avoid overpaying host round-trip cost
+/// on benchmark-sized solves.
+const TARGET_DISPATCH_MS: u128 = 120;
 
 struct JumpTableRefs<'a> {
     jump_points: &'a [crate::gpu::GpuAffinePoint],
@@ -198,7 +202,7 @@ impl KangarooSolver {
         num_kangaroos: u32,
         verbose: bool,
     ) -> Result<KangarooPipeline> {
-        let variant = if ctx.max_workgroup_size() >= 128 && num_kangaroos > 65_536 {
+        let variant = if ctx.max_workgroup_size() >= 128 && num_kangaroos >= 65_536 {
             WorkgroupVariant::Wg128
         } else {
             WorkgroupVariant::Wg64
@@ -594,7 +598,11 @@ impl KangarooSolver {
 
     /// Calibrate steps_per_call by measuring actual GPU dispatch times
     fn calibrate(&mut self, dp_bits: u32, verbose: bool) -> Result<()> {
-        let candidates = [16u32, 32, 64, 128, 256, 512];
+        // Benchmark-sized solves hit a sharp cliff between 24 and 32 steps on the
+        // tested GPUs, so probe a few low-end values before jumping back to the
+        // usual power-of-two sweep. Keep the list short - calibration dispatches
+        // still burn startup work even though their DP output gets dropped.
+        let candidates = [16u32, 17, 18, 24, 64, 128, 256, 512];
         let mut best_steps = candidates[0];
         let dp_meta = Self::dp_meta(dp_bits);
 
