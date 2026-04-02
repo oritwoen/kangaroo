@@ -30,6 +30,12 @@ const CASES: &[Case] = &[
         start: "800000000000",
         range_bits: 48,
     },
+    Case {
+        name: "49-bit",
+        pubkey: "02591d682c3da4a2a698633bf5751738b67c343285ebdc3492645cb44658911484",
+        start: "1000000000000",
+        range_bits: 49,
+    },
 ];
 
 struct CaseResult {
@@ -166,13 +172,13 @@ fn generate_markdown(
         out
     };
 
-    let rate_48 = results
+    let time_48 = results
         .iter()
         .find(|r| r.name == "48-bit")
-        .map(|r| r.rate / 1_000_000.0);
+        .map(|r| r.time_secs);
 
-    if let Some(rate) = rate_48 {
-        content = update_performance_history(&content, version, rate);
+    if let Some(time) = time_48 {
+        content = update_performance_history(&content, version, time);
     }
 
     content
@@ -229,15 +235,15 @@ fn format_ops(ops: u64) -> String {
     result
 }
 
-fn update_performance_history(content: &str, version: &str, rate_m: f64) -> String {
+fn update_performance_history(content: &str, version: &str, time_secs: f64) -> String {
     let version_tag = format!("v{version}");
     let section_header = "### Performance History";
 
     if let Some(range) = find_gpu_section(content, section_header) {
         let section = &content[range.0..range.1];
         let rows = parse_history_rows(section);
-        let baseline = rows.first().map(|r| r.rate).unwrap_or(rate_m);
-        let new_rows = upsert_history_row(rows, &version_tag, rate_m, baseline);
+        let baseline = rows.first().map(|r| r.time).unwrap_or(time_secs);
+        let new_rows = upsert_history_row(rows, &version_tag, time_secs, baseline);
         let new_section = format_history_section(&new_rows, baseline);
 
         let mut out = String::with_capacity(content.len());
@@ -250,9 +256,9 @@ fn update_performance_history(content: &str, version: &str, rate_m: f64) -> Stri
         let new_section = format_history_section(
             &[HistoryRow {
                 version: version_tag,
-                rate: rate_m,
+                time: time_secs,
             }],
-            rate_m,
+            time_secs,
         );
 
         let mut out = String::with_capacity(content.len() + new_section.len());
@@ -264,9 +270,9 @@ fn update_performance_history(content: &str, version: &str, rate_m: f64) -> Stri
         let new_section = format_history_section(
             &[HistoryRow {
                 version: version_tag,
-                rate: rate_m,
+                time: time_secs,
             }],
-            rate_m,
+            time_secs,
         );
         let mut out = content.to_string();
         out.push_str(&new_section);
@@ -276,7 +282,7 @@ fn update_performance_history(content: &str, version: &str, rate_m: f64) -> Stri
 
 struct HistoryRow {
     version: String,
-    rate: f64,
+    time: f64,
 }
 
 fn parse_history_rows(section: &str) -> Vec<HistoryRow> {
@@ -290,12 +296,12 @@ fn parse_history_rows(section: &str) -> Vec<HistoryRow> {
             continue;
         }
         let version = cols[1].trim().to_string();
-        let rate_str = cols[2].trim();
-        if let Some(rate) = rate_str
-            .strip_suffix(" M/s")
+        let time_str = cols[2].trim();
+        if let Some(time) = time_str
+            .strip_suffix("s")
             .and_then(|s| s.trim().parse::<f64>().ok())
         {
-            rows.push(HistoryRow { version, rate });
+            rows.push(HistoryRow { version, time });
         }
     }
     rows
@@ -304,15 +310,15 @@ fn parse_history_rows(section: &str) -> Vec<HistoryRow> {
 fn upsert_history_row(
     mut rows: Vec<HistoryRow>,
     version: &str,
-    rate: f64,
+    time: f64,
     _baseline: f64,
 ) -> Vec<HistoryRow> {
     if let Some(existing) = rows.iter_mut().find(|r| r.version == version) {
-        existing.rate = rate;
+        existing.time = time;
     } else {
         rows.push(HistoryRow {
             version: version.to_string(),
-            rate,
+            time,
         });
     }
     rows
@@ -322,13 +328,14 @@ fn format_history_section(rows: &[HistoryRow], baseline: f64) -> String {
     let mut s = String::new();
     writeln!(s, "### Performance History").unwrap();
     writeln!(s).unwrap();
-    writeln!(s, "| Version | 48-bit Rate | Improvement |").unwrap();
+    writeln!(s, "| Version | 48-bit Time | Improvement |").unwrap();
     writeln!(s, "|---------|-------------|-------------|").unwrap();
     for row in rows {
-        let improvement = if (row.rate - baseline).abs() < 0.01 {
+        let improvement = if (row.time - baseline).abs() < 0.01 {
             "baseline".to_string()
         } else {
-            let pct = ((row.rate - baseline) / baseline) * 100.0;
+            // Lower time = better, so invert the percentage
+            let pct = ((baseline - row.time) / baseline) * 100.0;
             if pct >= 0.0 {
                 format!("+{pct:.0}%")
             } else {
@@ -337,8 +344,8 @@ fn format_history_section(rows: &[HistoryRow], baseline: f64) -> String {
         };
         writeln!(
             s,
-            "| {} | {:.2} M/s | {} |",
-            row.version, row.rate, improvement
+            "| {} | {:.2}s | {} |",
+            row.version, row.time, improvement
         )
         .unwrap();
     }
@@ -497,10 +504,10 @@ Submit your results!
 
 ### Performance History
 
-| Version | 48-bit Rate | Improvement |
+| Version | 48-bit Time | Improvement |
 |---------|-------------|-------------|
-| v0.2.0 | 3.70 M/s | baseline |
-| v0.5.0 | 8.84 M/s | +139% |
+| v0.2.0 | 25.00s | baseline |
+| v0.5.0 | 15.00s | +40% |
 
 ## Contributing
 
@@ -509,7 +516,7 @@ Submit your results!
 
         let content = generate_markdown("Test GPU", "0.6.0", &sample_results(), existing);
         assert!(content.contains("v0.6.0"));
-        assert!(content.contains("17.10 M/s"));
+        assert!(content.contains("13.00s"));
         assert_eq!(content.matches("v0.2.0").count(), 1);
         assert!(content.contains("baseline"));
     }
@@ -523,10 +530,10 @@ Submit your results!
 
 ### Performance History
 
-| Version | 48-bit Rate | Improvement |
+| Version | 48-bit Time | Improvement |
 |---------|-------------|-------------|
-| v0.2.0 | 3.70 M/s | baseline |
-| v0.5.0 | 8.84 M/s | +139% |
+| v0.2.0 | 25.00s | baseline |
+| v0.5.0 | 15.00s | +40% |
 
 ## Contributing
 
@@ -536,7 +543,7 @@ Submit your results!
         let content = generate_markdown("New GPU", "0.5.0", &sample_results(), existing);
         assert!(content.contains("*Version: 0.5.0*"));
         assert_eq!(content.matches("v0.5.0").count(), 1);
-        assert!(content.contains("17.10 M/s"));
+        assert!(content.contains("13.00s"));
     }
 
     #[test]

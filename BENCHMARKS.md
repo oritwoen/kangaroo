@@ -30,15 +30,15 @@ kangaroo --benchmark
 
 ### Performance History
 
-| Version | 48-bit Rate | Improvement |
+| Version | 48-bit Time | Improvement |
 |---------|-------------|-------------|
-| v0.2.0 | 3.70 M/s | baseline |
-| v0.3.0 | 5.50 M/s | +49% |
-| v0.4.0 | 8.84 M/s | +139% |
-| v0.6.0 | 17.00 M/s | +359% |
-| v0.7.0 | 23.33 M/s | +531% |
-| v0.7.1 | 23.27 M/s | +529% |
-| v0.8.0 | 21.79 M/s | +489% |
+| v0.3.0 | 30.35s | baseline |
+| v0.4.0 | 25.11s | +17% |
+| v0.5.0 | 25.10s | +17% |
+| v0.6.0 | 12.93s | +57% |
+| v0.7.0 | 12.91s | +57% |
+| v0.7.1 | 12.92s | +57% |
+| v0.8.0 | 0.87s | +97% |
 
 ## Contributing
 
