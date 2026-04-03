@@ -265,15 +265,14 @@ impl DPTable {
                 "DP file may be corrupted: {} trailing bytes (not a multiple of {} byte records). {} complete records will be loaded.",
                 remainder, DP_RECORD_SIZE, expected
             );
-        }
-        // Truncate the file to remove the partial record
             if let Ok(f) = OpenOptions::new().write(true).open(&self.dp_file_path) {
                 let valid_size = HEADER_SIZE + expected * DP_RECORD_SIZE;
                 if let Err(e) = f.set_len(valid_size) {
                     tracing::error!("Failed to truncate DP file: {}", e);
                 }
-            } 
-        if expected == 0 {
+            }
+        }
+         if expected == 0 {
             return;
         }
 
@@ -366,7 +365,7 @@ impl DPTable {
             tracing::error!("Failed to write DP to disk: {} — DP may be lost!", e);
             return None;
         }
-                    if let Err(e) = writer.flush() {
+        if let Err(e) = writer.flush() {
             tracing::error!("Failed to flush DP file: {}", e);
         }
         self.next_offset += DP_RECORD_SIZE;
