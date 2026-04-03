@@ -1351,7 +1351,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     }
     drop(tx);
 
-    let mut dp_table = cpu::DPTable::new(solve_start, solve_pubkey, solve_base_point, range_bits);
+    let mut dp_table = cpu::DPTable::new(solve_start, solve_pubkey, solve_base_point, solve_range_bits);
     let mut found_key: Option<Vec<u8>> = None;
 
     let mut last_log_ops: u64 = 0;

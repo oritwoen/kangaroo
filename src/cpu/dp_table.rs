@@ -40,7 +40,7 @@ const DP_RECORD_SIZE: u64 = 68;
 
 /// File header: 4 bytes magic + 32 bytes compressed pubkey = 36 bytes
 const HEADER_MAGIC: &[u8; 4] = b"KDP1";
-const HEADER_SIZE: u64 = 36;
+const HEADER_SIZE: u64 = 37;
 
 /// SCALAR_HALF = (n+1)/2 where n is secp256k1 order
 /// Property: 2 × SCALAR_HALF ≡ 1 (mod n)
@@ -116,7 +116,9 @@ impl DPTable {
             "{}/Desktop/kangaroo_dps",
             std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
         );
-        let _ = fs::create_dir_all(&dp_dir);
+        if let Err(e) = fs::create_dir_all(&dp_dir) {
+            tracing::error!("Failed to create DP directory {}: {}", dp_dir, e);
+        }
         let dp_file_path = format!("{}/dps_range{}.bin", dp_dir, range_bits);
 
         let mut tbl = Self {
@@ -196,7 +198,7 @@ impl DPTable {
     /// Validate the file header: check magic and pubkey match
     fn validate_header(&self, expected_pubkey: &[u8; 33]) -> Result<bool, std::io::Error> {
         let mut file = File::open(&self.dp_file_path)?;
-        let mut header = [0u8; 36];
+        let mut header = [0u8; 37];
 
         // File too small for header
         let file_size = file.metadata()?.len();
@@ -213,12 +215,10 @@ impl DPTable {
             return Ok(false);
         }
 
-        // Check pubkey (first 32 bytes of compressed pubkey, skip prefix byte for flexibility)
-        // We compare all 33 bytes: prefix + X coordinate
-        let stored_pubkey = &header[4..36];
+        let stored_pubkey = &header[4..37];
         // stored_pubkey is 32 bytes, we compare with first 32 bytes of expected (skip 02/03 prefix)
         // Actually store 32 bytes of X coordinate only for cleaner comparison
-        if stored_pubkey != &expected_pubkey[1..33] {
+        if stored_pubkey != &expected_pubkey[0..33] {
             return Ok(false);
         }
 
@@ -229,9 +229,9 @@ impl DPTable {
     fn write_header(&self, pubkey_bytes: &[u8; 33]) {
         match File::create(&self.dp_file_path) {
             Ok(mut f) => {
-                let mut header = [0u8; 36];
+                let mut header = [0u8; 37];
                 header[0..4].copy_from_slice(HEADER_MAGIC);
-                header[4..36].copy_from_slice(&pubkey_bytes[1..33]); // X coordinate only
+                header[4..37].copy_from_slice(&pubkey_bytes[0..33]); // X coordinate only
                 if let Err(e) = f.write_all(&header) {
                     tracing::error!("Failed to write DP file header: {}", e);
                 }
