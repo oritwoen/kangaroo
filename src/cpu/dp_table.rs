@@ -6,26 +6,30 @@
 //! # Architecture
 //! - **RAM**: lightweight index only (~16 bytes per DP: hash_key + file offset + ktype)
 //! - **SSD**: full DP data (68 bytes per DP: 32B affine_x + 32B dist + 4B ktype)
-//! - On startup: builds index from existing SSD file (fast sequential read)
+//! - File header (36 bytes): 4B magic + 32B compressed pubkey for validation
+//! - On startup: validates pubkey, builds index from existing SSD file
 //! - On new DP: write to SSD, add to index, check for collisions
 //! - On collision check: read full DP from SSD only when hash_key matches
 //!
 //! # Persistence
 //! DPs are stored in `~/Desktop/kangaroo_dps/dps_range{bits}.bin`
 //! Each puzzle gets its own file based on the search range bits.
-//! No DP is ever lost between sessions — the file is append-only.
+//! The file header contains the target pubkey — if the pubkey changes,
+//! the old file is rejected and a fresh one is created.
+//! No DP is ever lost between sessions for the same puzzle.
 //!
 //! # Memory usage
-//! | DPs stored | Index RAM | SSD size |
-//! |-----------|-----------|----------|
-//! | 1 million | ~16 Mo | ~68 Mo |
-//! | 100 million | ~1.6 Go | ~6.8 Go |
-//! | 1 billion | ~16 Go | ~68 Go |
+//! | DPs stored  | Index RAM | SSD size |
+//! |-------------|-----------|----------|
+//! | 1 million   | ~16 Mo    | ~68 Mo   |
+//! | 100 million | ~1.6 Go   | ~6.8 Go  |
+//! | 1 billion   | ~16 Go    | ~68 Go   |
 
 use crate::convert::{limbs_to_be_bytes, limbs_to_le_bytes};
 use crate::crypto::verify_key_with_base;
 use crate::gpu::GpuDistinguishedPoint;
 use k256::elliptic_curve::ops::Reduce;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar, U256 as K256U256};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -33,6 +37,10 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 /// Size of one DP record on disk: 32 (affine_x) + 32 (dist) + 4 (ktype) = 68 bytes
 const DP_RECORD_SIZE: u64 = 68;
+
+/// File header: 4 bytes magic + 32 bytes compressed pubkey = 36 bytes
+const HEADER_MAGIC: &[u8; 4] = b"KDP1";
+const HEADER_SIZE: u64 = 36;
 
 /// SCALAR_HALF = (n+1)/2 where n is secp256k1 order
 /// Property: 2 × SCALAR_HALF ≡ 1 (mod n)
@@ -44,6 +52,16 @@ pub(crate) fn scalar_half() -> Scalar {
         0x20, 0xa1,
     ];
     Scalar::reduce(K256U256::from_be_slice(&bytes))
+}
+
+/// Compressed pubkey bytes (33 bytes: 02/03 prefix + 32 bytes X)
+fn pubkey_to_bytes(pubkey: &ProjectivePoint) -> [u8; 33] {
+    let affine = pubkey.to_affine();
+    let encoded = affine.to_encoded_point(true);
+    let bytes = encoded.as_bytes();
+    let mut result = [0u8; 33];
+    result.copy_from_slice(&bytes[..33]);
+    result
 }
 
 /// Full DP data — only used temporarily when reading from disk for collision verification
@@ -74,6 +92,8 @@ pub struct DPTable {
     wild2_count: usize,
     /// Buffered writer for appending new DPs to disk
     dp_writer: Option<BufWriter<File>>,
+    /// Persistent reader for collision checks (avoids reopening file each time)
+    dp_reader: Option<File>,
     /// Path to the DP file on disk
     dp_file_path: String,
     /// Next write offset in the file
@@ -88,8 +108,9 @@ impl DPTable {
     /// - Puzzle #140 (range_bits=140) → `dps_range140.bin`
     /// - etc.
     ///
-    /// On startup, builds a lightweight index from any existing DP file.
-    /// All full DP data remains on disk — only the index lives in RAM.
+    /// The file header contains the target pubkey. If the pubkey doesn't match
+    /// the existing file (different puzzle with same bit range), the old file
+    /// is renamed as backup and a fresh file is created.
     pub fn new(start: [u8; 32], pubkey: ProjectivePoint, base_point: ProjectivePoint, range_bits: u32) -> Self {
         let dp_dir = format!(
             "{}/Desktop/kangaroo_dps",
@@ -108,24 +129,117 @@ impl DPTable {
             wild1_count: 0,
             wild2_count: 0,
             dp_writer: None,
+            dp_reader: None,
             dp_file_path: dp_file_path.clone(),
-            next_offset: 0,
+            next_offset: HEADER_SIZE,
         };
 
-        // Build lightweight index from existing file on disk
-        tbl.build_index();
+        // Validate header and build index, or create fresh file
+        tbl.init_file();
 
-        // Open file for appending new DPs
+        tbl
+    }
+
+    /// Initialize the DP file: validate header, build index, open handles.
+    fn init_file(&mut self) {
+        let pubkey_bytes = pubkey_to_bytes(&self.pubkey);
+        let file_exists = std::path::Path::new(&self.dp_file_path).exists();
+
+        if file_exists {
+            match self.validate_header(&pubkey_bytes) {
+                Ok(true) => {
+                    // Header matches — build index from existing data
+                    self.build_index();
+                }
+                Ok(false) => {
+                    // Header mismatch — different puzzle, backup and start fresh
+                    let backup = format!("{}.backup.{}", self.dp_file_path,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    );
+                    tracing::warn!(
+                        "Pubkey mismatch in {} — backing up to {} and starting fresh",
+                        self.dp_file_path, backup
+                    );
+                    let _ = fs::rename(&self.dp_file_path, &backup);
+                    self.write_header(&pubkey_bytes);
+                }
+                Err(e) => {
+                    tracing::warn!("Cannot read DP file header: {} — starting fresh", e);
+                    self.write_header(&pubkey_bytes);
+                }
+            }
+        } else {
+            self.write_header(&pubkey_bytes);
+        }
+
+        // Open persistent reader for collision checks
+        if let Ok(f) = File::open(&self.dp_file_path) {
+            self.dp_reader = Some(f);
+        }
+
+        // Open writer for appending new DPs
         if let Ok(f) = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&dp_file_path)
+            .open(&self.dp_file_path)
         {
-            tracing::info!("DP persistence: {}", dp_file_path);
-            tbl.dp_writer = Some(BufWriter::new(f));
+            tracing::info!("DP persistence: {}", self.dp_file_path);
+            self.dp_writer = Some(BufWriter::new(f));
+        } else {
+            tracing::error!("Cannot open DP file for writing: {}", self.dp_file_path);
+        }
+    }
+
+    /// Validate the file header: check magic and pubkey match
+    fn validate_header(&self, expected_pubkey: &[u8; 33]) -> Result<bool, std::io::Error> {
+        let mut file = File::open(&self.dp_file_path)?;
+        let mut header = [0u8; 36];
+
+        // File too small for header
+        let file_size = file.metadata()?.len();
+        if file_size < HEADER_SIZE {
+            return Ok(false);
         }
 
-        tbl
+        file.read_exact(&mut header)?;
+
+        // Check magic
+        if &header[0..4] != HEADER_MAGIC {
+            // Old format file without header — treat as mismatch
+            tracing::warn!("DP file has no header (old format) — will backup and recreate");
+            return Ok(false);
+        }
+
+        // Check pubkey (first 32 bytes of compressed pubkey, skip prefix byte for flexibility)
+        // We compare all 33 bytes: prefix + X coordinate
+        let stored_pubkey = &header[4..36];
+        // stored_pubkey is 32 bytes, we compare with first 32 bytes of expected (skip 02/03 prefix)
+        // Actually store 32 bytes of X coordinate only for cleaner comparison
+        if stored_pubkey != &expected_pubkey[1..33] {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
+    /// Write file header with magic and pubkey
+    fn write_header(&self, pubkey_bytes: &[u8; 33]) {
+        match File::create(&self.dp_file_path) {
+            Ok(mut f) => {
+                let mut header = [0u8; 36];
+                header[0..4].copy_from_slice(HEADER_MAGIC);
+                header[4..36].copy_from_slice(&pubkey_bytes[1..33]); // X coordinate only
+                if let Err(e) = f.write_all(&header) {
+                    tracing::error!("Failed to write DP file header: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to create DP file: {}", e);
+            }
+        }
     }
 
     /// Build lightweight index by scanning the existing DP file.
@@ -138,7 +252,22 @@ impl DPTable {
         };
 
         let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let expected = file_size / DP_RECORD_SIZE;
+        if file_size <= HEADER_SIZE {
+            return;
+        }
+
+        let data_size = file_size - HEADER_SIZE;
+        let expected = data_size / DP_RECORD_SIZE;
+
+        // Check for truncated file
+        let remainder = data_size % DP_RECORD_SIZE;
+        if remainder != 0 {
+            tracing::warn!(
+                "DP file may be corrupted: {} trailing bytes (not a multiple of {} byte records). {} complete records will be loaded.",
+                remainder, DP_RECORD_SIZE, expected
+            );
+        }
+
         if expected == 0 {
             return;
         }
@@ -149,8 +278,14 @@ impl DPTable {
         );
 
         let mut reader = BufReader::new(file);
+        // Skip header
+        if reader.seek(SeekFrom::Start(HEADER_SIZE)).is_err() {
+            tracing::error!("Failed to seek past header in DP file");
+            return;
+        }
+
         let mut buf = [0u8; 68];
-        let mut offset: u64 = 0;
+        let mut offset: u64 = HEADER_SIZE;
 
         loop {
             match reader.read_exact(&mut buf) {
@@ -191,17 +326,16 @@ impl DPTable {
     }
 
     /// Read a full DP record from disk at the given offset.
-    /// Called only when a potential collision is detected via the index.
-    fn read_dp_from_disk(&self, offset: u64) -> Option<StoredDP> {
-        let mut file = match File::open(&self.dp_file_path) {
-            Ok(f) => f,
-            Err(_) => return None,
-        };
+    /// Uses persistent file handle to avoid reopening on every read.
+    fn read_dp_from_disk(&mut self, offset: u64) -> Option<StoredDP> {
+        let reader = self.dp_reader.as_mut()?;
         let mut buf = [0u8; 68];
-        if file.seek(SeekFrom::Start(offset)).is_err() {
+        if reader.seek(SeekFrom::Start(offset)).is_err() {
+            tracing::warn!("Failed to seek to offset {} in DP file", offset);
             return None;
         }
-        if file.read_exact(&mut buf).is_err() {
+        if reader.read_exact(&mut buf).is_err() {
+            tracing::warn!("Failed to read DP at offset {} from disk", offset);
             return None;
         }
         let mut affine_x = [0u8; 32];
@@ -212,7 +346,7 @@ impl DPTable {
         Some(StoredDP { affine_x, dist, ktype })
     }
 
-    /// Append a new DP to the SSD file. Flushes every 1000 DPs.
+    /// Append a new DP to the SSD file. Logs errors instead of silently discarding.
     fn write_dp_to_disk(&mut self, affine_x: &[u8; 32], dist: &[u8; 32], ktype: u32) -> u64 {
         let offset = self.next_offset;
         if let Some(ref mut writer) = self.dp_writer {
@@ -220,9 +354,14 @@ impl DPTable {
             buf[0..32].copy_from_slice(affine_x);
             buf[32..64].copy_from_slice(dist);
             buf[64..68].copy_from_slice(&ktype.to_le_bytes());
-            let _ = writer.write_all(&buf);
+            if let Err(e) = writer.write_all(&buf) {
+                tracing::error!("Failed to write DP to disk: {} — DP may be lost!", e);
+                return offset;
+            }
             if self.total_dps % 1000 == 0 {
-                let _ = writer.flush();
+                if let Err(e) = writer.flush() {
+                    tracing::error!("Failed to flush DP file: {}", e);
+                }
             }
         }
         self.next_offset += DP_RECORD_SIZE;
@@ -232,14 +371,15 @@ impl DPTable {
     /// Check if a new DP collides with any existing DP on disk.
     /// Only reads full DP data from SSD when the hash_key matches AND ktype differs.
     fn check_collision(
-        &self, hash_key: u64, affine_x: &[u8; 32], dist_bytes: &[u8; 32], dp_ktype: u32,
+        &mut self, hash_key: u64, affine_x: &[u8; 32], dist_bytes: &[u8; 32], dp_ktype: u32,
     ) -> Option<Vec<u8>> {
+        // Clone the refs to avoid borrow conflict with self
         let refs = match self.index.get(&hash_key) {
-            Some(r) => r,
+            Some(r) => r.clone(),
             None => return None,
         };
 
-        for disk_ref in refs {
+        for disk_ref in &refs {
             // Same type cannot produce a valid collision
             if disk_ref.ktype == dp_ktype {
                 continue;
@@ -291,7 +431,7 @@ impl DPTable {
         None
     }
 
-    /// Insert a new DP and check for collisions against ALL stored DPs (current + old sessions).
+    /// Insert a new DP and check for collisions against ALL stored DPs.
     ///
     /// Flow:
     /// 1. Compute hash_key from affine X
@@ -328,7 +468,7 @@ impl DPTable {
             affine_x[4], affine_x[5], affine_x[6], affine_x[7],
         ]);
 
-        // Check for collision against ALL DPs (current + old sessions) via index
+        // Check for collision against ALL DPs via index
         if let Some(key) = self.check_collision(hash_key, &affine_x, &dist_bytes, dp.ktype) {
             return Some(key);
         }
@@ -425,14 +565,6 @@ fn pad_to_32(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Two scalar interpretations of a GPU distance: direct and negated.
-///
-/// GPU distances use unsigned 256-bit wrapping (mod 2^256), but we need
-/// mod n scalars. We can't distinguish a positive distance from a wrapped
-/// negative without extra metadata, so we return both interpretations and
-/// let candidate key verification determine which is correct.
-///
-/// - `[0]` = `Scalar::reduce(v)` — correct when distance didn't wrap
-/// - `[1]` = `-(Scalar::reduce(2^256 - v))` — correct when distance wrapped negative
 fn distance_scalar_pair(dist_le_bytes: &[u8; 32]) -> [Scalar; 2] {
     let uint = K256U256::from_le_slice(dist_le_bytes);
     let direct = <Scalar as Reduce<K256U256>>::reduce(uint);
@@ -479,15 +611,6 @@ mod tests {
         GpuDistinguishedPoint { x: xw, dist: dw, ktype, kangaroo_id: 0, _padding: [0u32; 6] }
     }
 
-    #[test]
-    fn insert_stores_on_disk() {
-        let mut table = DPTable::new([0u8; 32], ProjectivePoint::GENERATOR, ProjectivePoint::GENERATOR, 40);
-        for i in 0..1000u32 {
-            assert!(table.insert_and_check(make_dp(i, i, 0)).is_none());
-        }
-        assert_eq!(table.total_dps(), 1000);
-    }
-
     fn scalar_from_u64(val: u64) -> Scalar {
         let mut le = [0u8; 32];
         le[..8].copy_from_slice(&val.to_le_bytes());
@@ -528,19 +651,40 @@ mod tests {
         }
     }
 
+    fn cleanup_test_file(range_bits: u32) {
+        let _ = std::fs::remove_file(format!(
+            "{}/Desktop/kangaroo_dps/dps_range{}.bin",
+            std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            range_bits
+        ));
+    }
+
+    #[test]
+    fn insert_stores_on_disk() {
+        cleanup_test_file(40);
+        let mut table = DPTable::new([0u8; 32], ProjectivePoint::GENERATOR, ProjectivePoint::GENERATOR, 40);
+        for i in 0..1000u32 {
+            assert!(table.insert_and_check(make_dp(i, i, 0)).is_none());
+        }
+        assert_eq!(table.total_dps(), 1000);
+        cleanup_test_file(40);
+    }
+
     #[test]
     fn test_collision_case1() {
+        cleanup_test_file(41);
         let k = scalar_from_u64(66);
         let start_s = scalar_from_u64(50);
         let td = scalar_from_u64(30);
         let wd = scalar_from_u64(14);
         let pk = ProjectivePoint::mul_by_generator(&k);
         let cp = ProjectivePoint::mul_by_generator(&(start_s + td));
-        let mut table = DPTable::new(scalar_to_le_bytes(&start_s), pk, ProjectivePoint::GENERATOR, 40);
+        let mut table = DPTable::new(scalar_to_le_bytes(&start_s), pk, ProjectivePoint::GENERATOR, 41);
         assert!(table.insert_and_check(make_real_dp(&cp, &td, 0)).is_none());
         let r = table.insert_and_check(make_real_dp(&cp, &wd, 1));
         assert!(r.is_some());
         assert!(verify_key(&r.unwrap(), &pk));
+        cleanup_test_file(41);
     }
 
     #[test]
@@ -550,20 +694,24 @@ mod tests {
 
     #[test]
     fn test_cross_wild() {
+        cleanup_test_file(42);
         let pk = parse_pubkey("033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c").unwrap();
         let k = scalar_from_u64(0x0d2c55);
         let d1 = scalar_from_u64(123_456);
         let d2 = d1 + (k + k);
         let cp = ProjectivePoint::mul_by_generator(&(k + d1));
-        let mut table = DPTable::new([0u8; 32], pk, ProjectivePoint::GENERATOR, 40);
+        let mut table = DPTable::new([0u8; 32], pk, ProjectivePoint::GENERATOR, 42);
         assert!(table.insert_and_check(make_real_dp(&cp, &d1, 1)).is_none());
         let r = table.insert_and_check(make_real_dp(&cp, &d2, 2));
         assert!(r.is_some());
         assert!(verify_key(&r.clone().unwrap(), &table.pubkey));
+        cleanup_test_file(42);
     }
 
     #[test]
     fn test_persistence_across_sessions() {
+        cleanup_test_file(99);
+
         // Session 1: insert a tame DP
         {
             let k = scalar_from_u64(66);
@@ -576,7 +724,7 @@ mod tests {
             assert_eq!(table.total_dps(), 1);
         }
 
-        // Session 2: insert a wild DP at the same point → should find collision
+        // Session 2: insert a wild DP at the same point → should find collision from disk
         {
             let k = scalar_from_u64(66);
             let start_s = scalar_from_u64(50);
@@ -585,18 +733,48 @@ mod tests {
             let pk = ProjectivePoint::mul_by_generator(&k);
             let cp = ProjectivePoint::mul_by_generator(&(start_s + td));
             let mut table = DPTable::new(scalar_to_le_bytes(&start_s), pk, ProjectivePoint::GENERATOR, 99);
-            // Should have loaded the tame DP from disk
             assert_eq!(table.total_dps(), 1);
-            // Now insert wild → collision with the tame from session 1
             let r = table.insert_and_check(make_real_dp(&cp, &wd, 1));
             assert!(r.is_some(), "Should find collision with DP from previous session");
             assert!(verify_key(&r.unwrap(), &pk));
         }
 
-        // Cleanup test file
-        let _ = std::fs::remove_file(format!(
-            "{}/Desktop/kangaroo_dps/dps_range99.bin",
+        cleanup_test_file(99);
+    }
+
+    #[test]
+    fn test_pubkey_mismatch_creates_new_file() {
+        cleanup_test_file(98);
+
+        // Session 1: puzzle A
+        {
+            let pk_a = ProjectivePoint::mul_by_generator(&scalar_from_u64(100));
+            let mut table = DPTable::new([0u8; 32], pk_a, ProjectivePoint::GENERATOR, 98);
+            assert!(table.insert_and_check(make_dp(1, 1, 0)).is_none());
+            assert_eq!(table.total_dps(), 1);
+        }
+
+        // Session 2: puzzle B (different pubkey, same range_bits)
+        {
+            let pk_b = ProjectivePoint::mul_by_generator(&scalar_from_u64(200));
+            let table = DPTable::new([0u8; 32], pk_b, ProjectivePoint::GENERATOR, 98);
+            // Should have started fresh — old DPs rejected due to pubkey mismatch
+            assert_eq!(table.total_dps(), 0);
+        }
+
+        cleanup_test_file(98);
+        // Also clean up the backup file
+        let dp_dir = format!(
+            "{}/Desktop/kangaroo_dps",
             std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-        ));
+        );
+        if let Ok(entries) = std::fs::read_dir(&dp_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("dps_range98.bin.backup") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
     }
 }
