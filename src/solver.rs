@@ -342,7 +342,7 @@ impl KangarooSolver {
             pipeline,
             buffers,
             dp_table: if with_dp_table {
-                Some(DPTable::new(start, pubkey, base_point))
+                Some(DPTable::new(start, pubkey, base_point, range_bits))
             } else {
                 None
             },
