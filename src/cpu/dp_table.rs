@@ -346,25 +346,27 @@ impl DPTable {
     }
 
     /// Append a new DP to the SSD file. Logs errors instead of silently discarding.
-    fn write_dp_to_disk(&mut self, affine_x: &[u8; 32], dist: &[u8; 32], ktype: u32) -> u64 {
+    fn write_dp_to_disk(&mut self, affine_x: &[u8; 32], dist: &[u8; 32], ktype: u32) -> Option<u64> {
+        let writer = match self.dp_writer.as_mut() {
+            Some(w) => w,
+            None => return None,
+        };
         let offset = self.next_offset;
-        if let Some(ref mut writer) = self.dp_writer {
-            let mut buf = [0u8; 68];
-            buf[0..32].copy_from_slice(affine_x);
-            buf[32..64].copy_from_slice(dist);
-            buf[64..68].copy_from_slice(&ktype.to_le_bytes());
-            if let Err(e) = writer.write_all(&buf) {
-                tracing::error!("Failed to write DP to disk: {} — DP may be lost!", e);
-                return offset;
-            }
-            if self.total_dps % 1000 == 0 {
-                if let Err(e) = writer.flush() {
-                    tracing::error!("Failed to flush DP file: {}", e);
-                }
+        let mut buf = [0u8; 68];
+        buf[0..32].copy_from_slice(affine_x);
+        buf[32..64].copy_from_slice(dist);
+        buf[64..68].copy_from_slice(&ktype.to_le_bytes());
+        if let Err(e) = writer.write_all(&buf) {
+            tracing::error!("Failed to write DP to disk: {} — DP may be lost!", e);
+            return None;
+        }
+        if self.total_dps % 1000 == 0 {
+            if let Err(e) = writer.flush() {
+                tracing::error!("Failed to flush DP file: {}", e);
             }
         }
         self.next_offset += DP_RECORD_SIZE;
-        offset
+        Some(offset)
     }
 
     /// Check if a new DP collides with any existing DP on disk.
@@ -473,13 +475,14 @@ impl DPTable {
         }
 
         // No collision — write to SSD and add to index
-        let offset = self.write_dp_to_disk(&affine_x, &dist_bytes, dp.ktype);
-        self.index
-            .entry(hash_key)
-            .or_insert_with(Vec::new)
-            .push(DiskRef { offset, ktype: dp.ktype });
-        self.total_dps += 1;
-        self.increment_type_counter(dp.ktype);
+        if let Some(offset) = self.write_dp_to_disk(&affine_x, &dist_bytes, dp.ktype) {
+            self.index
+                .entry(hash_key)
+                .or_insert_with(Vec::new)
+                .push(DiskRef { offset, ktype: dp.ktype });
+            self.total_dps += 1;
+            self.increment_type_counter(dp.ktype);
+        }
 
         None
     }
