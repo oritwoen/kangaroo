@@ -38,7 +38,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 /// Size of one DP record on disk: 32 (affine_x) + 32 (dist) + 4 (ktype) = 68 bytes
 const DP_RECORD_SIZE: u64 = 68;
 
-/// File header: 4 bytes magic + 32 bytes compressed pubkey = 36 bytes
+/// File header: 4 bytes magic + 33 bytes compressed pubkey = 37 bytes
 const HEADER_MAGIC: &[u8; 4] = b"KDP1";
 const HEADER_SIZE: u64 = 37;
 
@@ -165,7 +165,7 @@ impl DPTable {
                         "Pubkey mismatch in {} — backing up to {} and starting fresh",
                         self.dp_file_path, backup
                     );
-                    let _ = fs::rename(&self.dp_file_path, &backup);
+                    if let Err(e) = fs::rename(&self.dp_file_path, &backup) { tracing::error!("Failed to backup DP file: {}", e); }
                     self.write_header(&pubkey_bytes);
                 }
                 Err(e) => {
@@ -272,7 +272,7 @@ impl DPTable {
                 }
             }
         }
-         if expected == 0 {
+        if expected == 0 {
             return;
         }
 
@@ -367,6 +367,7 @@ impl DPTable {
         }
         if let Err(e) = writer.flush() {
             tracing::error!("Failed to flush DP file: {}", e);
+            return None;
         }
         self.next_offset += DP_RECORD_SIZE;
         Some(offset)
