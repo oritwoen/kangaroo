@@ -169,7 +169,16 @@ impl DPTable {
                     self.write_header(&pubkey_bytes);
                 }
                 Err(e) => {
-                    tracing::warn!("Cannot read DP file header: {} — starting fresh", e);
+                    tracing::warn!("Cannot read DP file header: {} — backing up and starting fresh", e);
+                    let backup = format!("{}.backup.{}", self.dp_file_path,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    );
+                    if let Err(re) = fs::rename(&self.dp_file_path, &backup) {
+                        tracing::error!("Failed to backup DP file: {}", re);
+                    }
                     self.write_header(&pubkey_bytes);
                 }
             }
@@ -411,10 +420,10 @@ impl DPTable {
                     (dist_bytes.as_ref(), existing.dist.as_slice())
                 };
                 if let Some(key) = compute_candidate_keys_cross_wild(d1, d2, &self.pubkey, &self.base_point) {
-                    tracing::info!("Cross-wild collision! Key: 0x{}", hex::encode(&key));
+                    tracing::info!("Cross-wild collision resolved");
                     return Some(key);
                 }
-                return None;
+                continue;
             }
 
             // Tame ↔ wild collision
@@ -427,11 +436,11 @@ impl DPTable {
             let candidates = compute_candidate_keys(&self.start, tame_dist, wild_dist);
             for candidate in &candidates {
                 if verify_key_with_base(candidate, &self.pubkey, &self.base_point) {
-                    tracing::info!("Collision found! Key: 0x{}", hex::encode(candidate));
+                    tracing::info!("Collision found");
                     return Some(candidate.clone());
                 }
             }
-            return None;
+            continue;
         }
         None
     }
