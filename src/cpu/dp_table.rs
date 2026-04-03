@@ -6,7 +6,7 @@
 //! # Architecture
 //! - **RAM**: lightweight index only (~16 bytes per DP: hash_key + file offset + ktype)
 //! - **SSD**: full DP data (68 bytes per DP: 32B affine_x + 32B dist + 4B ktype)
-//! - File header (36 bytes): 4B magic + 32B compressed pubkey for validation
+//! - File header (37 bytes): 4B magic + 33B compressed pubkey for validation
 //! - On startup: validates pubkey, builds index from existing SSD file
 //! - On new DP: write to SSD, add to index, check for collisions
 //! - On collision check: read full DP from SSD only when hash_key matches
@@ -216,8 +216,7 @@ impl DPTable {
         }
 
         let stored_pubkey = &header[4..37];
-        // stored_pubkey is 32 bytes, we compare with first 32 bytes of expected (skip 02/03 prefix)
-        // Actually store 32 bytes of X coordinate only for cleaner comparison
+                
         if stored_pubkey != &expected_pubkey[0..33] {
             return Ok(false);
         }
@@ -231,7 +230,7 @@ impl DPTable {
             Ok(mut f) => {
                 let mut header = [0u8; 37];
                 header[0..4].copy_from_slice(HEADER_MAGIC);
-                header[4..37].copy_from_slice(&pubkey_bytes[0..33]); // X coordinate only
+                header[4..37].copy_from_slice(&pubkey_bytes[0..33]); // Full compressed pubkey (prefix + X)
                 if let Err(e) = f.write_all(&header) {
                     tracing::error!("Failed to write DP file header: {}", e);
                 }
